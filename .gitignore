@@ -1,0 +1,13 @@
+# Scan output — never commit results of an engagement
+cataract_*/
+results/
+*.log
+all_unique_results.txt
+nmap_full_ports.txt
+
+# Local target lists
+targets.txt
+
+# Editor / OS cruft
+*.swp
+.DS_Store

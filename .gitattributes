@@ -1,0 +1,5 @@
+# Normalize line endings. Shell scripts MUST be LF or they break on Linux.
+* text=auto eol=lf
+*.sh text eol=lf
+*.md text eol=lf
+LICENSE text eol=lf
