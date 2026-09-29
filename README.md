@@ -1,8 +1,4 @@
-<p align="center">
-  <img src="cover.png" alt="Cataract" width="100%">
-</p>
-
-<h1 align="center">Cataract</h1>
+# Cataract
 
 **Tiered, recursive, multi-target web enumeration for authorized web penetration testing.**
 
@@ -16,14 +12,9 @@
 
 ## Screenshots
 
-<!-- Add your own screenshots here. Suggested shots:
-     1. The interactive prompt + wordlist availability check.
-     2. The tmux tab bar with several targets, one highlighted (active).
-     3. A feroxbuster tier running with colorized output. -->
-
-| Interactive start | tmux tabs (one per target) | A tier running |
-| ----------------- | -------------------------- | -------------- |
-| _screenshot_      | _screenshot_               | _screenshot_   |
+| Interactive run — pick service &amp; port per target | Live scan across tmux tabs |
+| :--: | :--: |
+| ![Interactive mode: service/port prompts and the wordlist check](screenshots/interactive.png) | ![tmux tab bar with feroxbuster running per target](screenshots/tmux-tabs.png) |
 
 ---
 
