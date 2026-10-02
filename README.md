@@ -45,6 +45,8 @@
 
 ## Prerequisites
 
+> **Linux only (Kali/Debian/Ubuntu tested).** Cataract uses util-linux `script -qec` to keep feroxbuster colorized while logging, which is not available on macOS/BSD; it exits early with a clear message on non-Linux hosts.
+
 | Tool | Required? | Purpose |
 | ---- | --------- | ------- |
 | `bash` | yes | interpreter |

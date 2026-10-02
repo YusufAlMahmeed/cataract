@@ -296,6 +296,20 @@ check_wordlists() {
 # ============================================================================
 #  Tool prerequisite check
 # ============================================================================
+# check_platform: Cataract relies on util-linux `script -qec "<cmd>"` to keep
+# feroxbuster colorized while logging. That syntax is util-linux-specific and
+# fails on macOS/BSD (whose `script` is `script [-q] file cmd ...`). Bail early
+# with a clear message rather than failing cryptically mid-scan.
+check_platform() {
+    local os; os="$(uname -s 2>/dev/null || echo unknown)"
+    if [[ "$os" != "Linux" ]]; then
+        err_msg "Cataract is Linux-only (tested on Kali/Debian/Ubuntu). Detected: $os."
+        err_msg "    It uses util-linux 'script -qec' for colorized logging, which is not"
+        err_msg "    available on macOS/BSD. Please run it on a Linux host."
+        exit 1
+    fi
+}
+
 check_tools() {
     local missing=() t
     for t in nmap feroxbuster script; do
@@ -350,6 +364,10 @@ run_interactive() {
 # ============================================================================
 #  Argument parsing
 # ============================================================================
+# Linux-only; exits early on macOS/BSD with a clear message. '-h/--help' is
+# allowed through so usage is readable on any platform.
+case "${1:-}" in -h|--help) ;; *) check_platform ;; esac
+
 if [[ "${1:-}" == "--worker" ]]; then
     WORKER_MODE=1; WORKER_TARGET="${2:-}"; WORKER_DIR="${3:-}"; resolve_wordlists
 elif [[ $# -eq 0 ]]; then
