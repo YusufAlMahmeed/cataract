@@ -231,6 +231,10 @@ Results are de-duplicated from the JSON when `jq` is available (robust); otherwi
 
 ---
 
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release history.
+
 ## License
 
 Released under the [MIT License](LICENSE). Provided as-is, for authorized security testing and education.

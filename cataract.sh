@@ -3,7 +3,7 @@
 #  cataract.sh  --  Cataract
 #  Multi-target, recursive, tiered web enumeration for authorized web pentesting
 # ============================================================================
-#  Version:  7.0.0
+#  Version:  7.1.0
 #  Author:   Yusuf AlMahmeed  (github.com/YusufAlMahmeed)
 #  License:  MIT (see LICENSE)
 #
