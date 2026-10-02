@@ -684,21 +684,31 @@ run_target() {
     done_msg "[$TARGET] ALL DONE. Everything is in $TDIR"
 }
 
-# build_index: top-level index.md linking each target's summary (single /
-# sequential runs; tmux tabs are independent processes and write their own).
+# build_index: (re)write <out>/index.md linking every target's summary.md.
+# Called by the single/sequential paths AND by each tmux/GUI worker when it
+# finishes, so the index is always current. A flock on <out>/.index.lock keeps
+# concurrent workers from clobbering each other's write (the whole generate +
+# write runs inside the locked subshell). Falls back to an unlocked write if
+# flock is unavailable.
 build_index() {
-    local idx="$OUTDIR/index.md" d name
-    {
-        echo "# Cataract run index"
-        echo
-        echo "_Generated: $(date)_"
-        echo
-        for d in "$OUTDIR"/*/; do
-            [[ -f "${d}summary.md" ]] || continue
-            name="$(basename "$d")"
-            echo "- [$name](${name}/summary.md)"
-        done
-    } > "$idx"
+    local out="${1:-$OUTDIR}" idx lock
+    idx="$out/index.md"; lock="$out/.index.lock"
+    (
+        command -v flock >/dev/null 2>&1 && flock 9
+        {
+            echo "# Cataract run index"
+            echo
+            echo "_Generated: $(date)_"
+            echo
+            local d name
+            for d in "$out"/*/; do
+                [[ -f "${d}summary.md" ]] || continue
+                name="$(basename "$d")"
+                [[ "$name" == "_nmap" ]] && continue
+                echo "- [$name](${name}/summary.md)"
+            done
+        } > "$idx"
+    ) 9>"$lock"
     done_msg "Run index: $idx"
 }
 
@@ -710,6 +720,8 @@ if [[ $WORKER_MODE -eq 1 ]]; then
         echo -e "${C_CYAN}${C_BOLD}[tmux]${C_RESET} Switch tabs: Ctrl+b n/p or Ctrl+b <number>  |  Detach: Ctrl+b d  |  Pause tier: ENTER"
     fi
     run_target "$WORKER_TARGET" "$WORKER_DIR"
+    # Rebuild the shared index.md (OUTDIR is the parent of this worker's dir).
+    build_index "$(dirname "$WORKER_DIR")"
     echo -e "${C_GREEN}Press Enter to close this tab...${C_RESET}"; read -r
     exit 0
 fi
@@ -741,7 +753,7 @@ worker_cmd() {
 # ============================================================================
 if [[ ${#TARGETS[@]} -eq 1 ]]; then
     run_target "${TARGETS[0]}" "$OUTDIR/$(safe_name "${TARGETS[0]}")"
-    build_index
+    build_index "$OUTDIR"
     exit 0
 fi
 
@@ -827,7 +839,7 @@ launch_sequential() {
     warn_msg "For one window with a tab per target: sudo apt install tmux"
     local T
     for T in "${TARGETS[@]}"; do run_target "$T" "$OUTDIR/$(safe_name "$T")"; done
-    build_index
+    build_index "$OUTDIR"
 }
 
 # --- Launcher selection ------------------------------------------------------
