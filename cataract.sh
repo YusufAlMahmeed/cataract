@@ -683,7 +683,10 @@ SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 export_settings() {
     export THREADS DEPTH EXTENSIONS NMAP_OPTS RATE_LIMIT INSECURE AUTO \
            CUSTOM_WORDLIST USE_GUI_TERM EXTRA_PORT_MAX_TIER
-    [[ ${#HEADERS[@]} -gt 0 ]] && export CATARACT_HEADERS="$(printf '%s\n' "${HEADERS[@]}")"
+    # Declare then assign separately (SC2155): keep printf's exit status visible.
+    local hdrs=""
+    [[ ${#HEADERS[@]} -gt 0 ]] && hdrs="$(printf '%s\n' "${HEADERS[@]}")"
+    [[ -n "$hdrs" ]] && export CATARACT_HEADERS="$hdrs"
 }
 
 # worker_cmd: build a safely-quoted "bash <script> --worker <target> <dir>"
@@ -717,7 +720,7 @@ launch_tmux() {
     banner "Launching tmux session '$S' -- one tab per target (${#TARGETS[@]})."
 
     local first_name; first_name="$(safe_name "${TARGETS[0]}")"
-    local first_dir="$OUTDIR/$(safe_name "${TARGETS[0]}")"
+    local first_dir; first_dir="$OUTDIR/$(safe_name "${TARGETS[0]}")"
     local first_cmd; first_cmd="$(worker_cmd "${TARGETS[0]}" "$first_dir")"
     tmux new-session -d -s "$S" -n "$first_name" "$first_cmd"
 
