@@ -28,8 +28,8 @@
   | ---- | -------- | ------ |
   | 1 | `dirb/common.txt` | `dirb` (required) |
   | 2 | `dirb/big.txt` | `dirb` (required) |
-  | 3 | `raft-medium-files.txt` | SecLists (optional) |
-  | 4 | `raft-large-files.txt` | SecLists (optional) |
+  | 3 | `raft-medium-directories.txt` (+ `raft-medium-files.txt`, no-ext pass) | SecLists (optional) |
+  | 4 | `raft-large-directories.txt` (+ `raft-large-files.txt`, no-ext pass) | SecLists (optional) |
 - **Auto-enumerates extra web ports** — parses the `nmap` results, finds additional `http`/`https` services (8080, 8443, …), and offers to run the cascade against those too (automatic in `--auto`).
 - **Recursive** directory/file discovery (`feroxbuster`, depth 3 by default) — something `gobuster` doesn't do natively.
 - **Self-signed TLS handled** — `feroxbuster -k` is auto-enabled for `https://` targets (and forceable with `-k`), so lab/internal certs don't silently kill your results.
@@ -131,8 +131,10 @@ Web content brute-forcing is a trade-off between coverage and time. Rather than 
 
 1. **Tier 1 — `dirb/common.txt`** — fast, catches the obvious stuff.
 2. **Tier 2 — `dirb/big.txt`** — broader, still quick.
-3. **Tier 3 — SecLists `raft-medium-files.txt`** — real coverage.
-4. **Tier 4 — SecLists `raft-large-files.txt`** — exhaustive; slow.
+3. **Tier 3 — SecLists `raft-medium-directories.txt`** — real coverage.
+4. **Tier 4 — SecLists `raft-large-directories.txt`** — exhaustive; slow.
+
+Tiers 3–4 use the **directories** lists (not the files lists) for two reasons: directory words carry no extension, so appending your extension set is correct instead of producing waste like `index.php.php`, and directories are what feroxbuster's recursion descends into. When the matching `raft-*-files.txt` list is present, Cataract runs it as an extra **filename pass without `--extensions`**, so real filenames are still covered.
 
 After each tier you're asked whether to continue. Stop as soon as you've found what you need — you rarely have to reach Tier 4. All tiers use recursion (depth 3) and the same extension set by default. In `--auto` mode the prompts are skipped and every tier runs unattended.
 

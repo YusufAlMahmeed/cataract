@@ -84,16 +84,38 @@ set -uo pipefail
                                                        #   extra web ports
 
 # Tier wordlist candidate paths (first existing wins; absorbs distro casing).
+#
+# Tiers 3/4 use the SecLists raft *directories* lists, not the *files* lists:
+#   - directory words have no extension, so appending EXTENSIONS is correct
+#     (the files lists already include extensions -> e.g. index.php.php waste),
+#   - directories are what feroxbuster's recursion descends into.
+# The matching raft *files* lists are resolved separately and run as an extra
+# pass WITHOUT --extensions (see run_cascade), so filenames are still covered.
 TIER1_CANDIDATES=( "/usr/share/wordlists/dirb/common.txt" )
 TIER2_CANDIDATES=( "/usr/share/wordlists/dirb/big.txt" )
 TIER3_CANDIDATES=(
+    "/usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt"
+    "/usr/share/SecLists/Discovery/Web-Content/raft-medium-directories.txt"
+    "/usr/share/wordlists/seclists/Discovery/Web-Content/raft-medium-directories.txt"
+    "/usr/share/wordlists/SecLists/Discovery/Web-Content/raft-medium-directories.txt"
+    "/opt/SecLists/Discovery/Web-Content/raft-medium-directories.txt"
+)
+TIER4_CANDIDATES=(
+    "/usr/share/seclists/Discovery/Web-Content/raft-large-directories.txt"
+    "/usr/share/SecLists/Discovery/Web-Content/raft-large-directories.txt"
+    "/usr/share/wordlists/seclists/Discovery/Web-Content/raft-large-directories.txt"
+    "/usr/share/wordlists/SecLists/Discovery/Web-Content/raft-large-directories.txt"
+    "/opt/SecLists/Discovery/Web-Content/raft-large-directories.txt"
+)
+# raft *files* lists for the no-extension filename pass (optional; skipped if absent).
+TIER3_FILES_CANDIDATES=(
     "/usr/share/seclists/Discovery/Web-Content/raft-medium-files.txt"
     "/usr/share/SecLists/Discovery/Web-Content/raft-medium-files.txt"
     "/usr/share/wordlists/seclists/Discovery/Web-Content/raft-medium-files.txt"
     "/usr/share/wordlists/SecLists/Discovery/Web-Content/raft-medium-files.txt"
     "/opt/SecLists/Discovery/Web-Content/raft-medium-files.txt"
 )
-TIER4_CANDIDATES=(
+TIER4_FILES_CANDIDATES=(
     "/usr/share/seclists/Discovery/Web-Content/raft-large-files.txt"
     "/usr/share/SecLists/Discovery/Web-Content/raft-large-files.txt"
     "/usr/share/wordlists/seclists/Discovery/Web-Content/raft-large-files.txt"
@@ -127,6 +149,7 @@ err_msg()  { echo -e "${C_RED}${C_BOLD}[x]${C_RESET} $1"; }
 OUTDIR=""; TARGETS_FILE=""; TARGETS=(); WORKER_MODE=0
 WORKER_TARGET=""; WORKER_DIR=""; norm=""
 TIER1_WORDLIST=""; TIER2_WORDLIST=""; TIER3_WORDLIST=""; TIER4_WORDLIST=""
+TIER3_FILES_WORDLIST=""; TIER4_FILES_WORDLIST=""
 BG_PIDS=()   # background nmap PIDs, so the trap can reap them
 
 # ---- Clean shutdown: never orphan a background nmap scan --------------------
@@ -243,6 +266,8 @@ resolve_wordlists() {
     TIER2_WORDLIST="$(first_existing "${TIER2_CANDIDATES[@]}")" || TIER2_WORDLIST=""
     TIER3_WORDLIST="$(first_existing "${TIER3_CANDIDATES[@]}")" || TIER3_WORDLIST=""
     TIER4_WORDLIST="$(first_existing "${TIER4_CANDIDATES[@]}")" || TIER4_WORDLIST=""
+    TIER3_FILES_WORDLIST="$(first_existing "${TIER3_FILES_CANDIDATES[@]}")" || TIER3_FILES_WORDLIST=""
+    TIER4_FILES_WORDLIST="$(first_existing "${TIER4_FILES_CANDIDATES[@]}")" || TIER4_FILES_WORDLIST=""
 }
 
 check_wordlists() {
@@ -259,9 +284,11 @@ check_wordlists() {
     [[ -n "$TIER2_WORDLIST" ]] && done_msg "Tier 2: $TIER2_WORDLIST" \
         || { err_msg "Tier 2 (dirb big.txt) missing.     sudo apt install dirb"; ok=0; }
     [[ -n "$TIER3_WORDLIST" ]] && done_msg "Tier 3: $TIER3_WORDLIST" \
-        || warn_msg "Tier 3 (SecLists raft-medium) not found. sudo apt install seclists"
+        || warn_msg "Tier 3 (SecLists raft-medium-directories) not found. sudo apt install seclists"
     [[ -n "$TIER4_WORDLIST" ]] && done_msg "Tier 4: $TIER4_WORDLIST" \
-        || warn_msg "Tier 4 (SecLists raft-large) not found.  sudo apt install seclists"
+        || warn_msg "Tier 4 (SecLists raft-large-directories) not found.  sudo apt install seclists"
+    [[ -n "$TIER3_FILES_WORDLIST" ]] && done_msg "Tier 3 files pass: $TIER3_FILES_WORDLIST (no extensions)"
+    [[ -n "$TIER4_FILES_WORDLIST" ]] && done_msg "Tier 4 files pass: $TIER4_FILES_WORDLIST (no extensions)"
     [[ $ok -eq 0 ]] && { err_msg "Required Tier 1/2 wordlists missing -- fix before continuing."; exit 1; }
     echo
 }
@@ -376,8 +403,10 @@ fi
 # Why `--json --output <file>` ?
 #   feroxbuster writes JSON to --output (NOT to stdout), so the live colored
 #   view is preserved while we get machine-parseable results in the file.
+# The optional 6th arg (no_ext=1) runs the pass WITHOUT --extensions; used for
+# the raft *files* lists, whose words already include their own extensions.
 ferox_run() {
-    local url="$1" log="$2" json="$3" wordlist="$4" label="$5"
+    local url="$1" log="$2" json="$3" wordlist="$4" label="$5" no_ext="${6:-0}"
     banner "[$url] $label - $wordlist"
 
     local -a a=( feroxbuster
@@ -385,9 +414,9 @@ ferox_run() {
         --wordlist "$wordlist"
         --threads "$THREADS"
         --depth "$DEPTH"
-        --extensions "$EXTENSIONS"
-        --json --output "$json"
     )
+    [[ "$no_ext" != "1" ]] && a+=( --extensions "$EXTENSIONS" )
+    a+=( --json --output "$json" )
     # Self-signed / lab TLS: -k for https targets or when forced with -k/--insecure.
     [[ "$url" == https://* || "$INSECURE" == "1" ]] && a+=( -k )
     # Optional rate limiting.
@@ -452,13 +481,20 @@ run_cascade() {
             if [[ -z "$TIER3_WORDLIST" ]]; then
                 err_msg "Tier 3 wordlist missing -- skipping. (sudo apt install seclists)"
             else
-                ferox_run "$url" "$dir/tier3.log" "$dir/tier3.json" "$TIER3_WORDLIST" "TIER 3 (raft-medium)"
+                ferox_run "$url" "$dir/tier3.log" "$dir/tier3.json" "$TIER3_WORDLIST" "TIER 3 (raft-medium dirs)"
+                # Optional filename pass (no extensions) using the raft files list.
+                [[ -n "$TIER3_FILES_WORDLIST" ]] && \
+                    ferox_run "$url" "$dir/tier3_files.log" "$dir/tier3_files.json" \
+                        "$TIER3_FILES_WORDLIST" "TIER 3 files (raft-medium, no ext)" 1
 
                 if [[ $max_tier -ge 4 ]] && prompt_continue "TIER 4 (SecLists raft-large)"; then
                     if [[ -z "$TIER4_WORDLIST" ]]; then
                         err_msg "Tier 4 wordlist missing -- skipping. (sudo apt install seclists)"
                     else
-                        ferox_run "$url" "$dir/tier4.log" "$dir/tier4.json" "$TIER4_WORDLIST" "TIER 4 (raft-large)"
+                        ferox_run "$url" "$dir/tier4.log" "$dir/tier4.json" "$TIER4_WORDLIST" "TIER 4 (raft-large dirs)"
+                        [[ -n "$TIER4_FILES_WORDLIST" ]] && \
+                            ferox_run "$url" "$dir/tier4_files.log" "$dir/tier4_files.json" \
+                                "$TIER4_FILES_WORDLIST" "TIER 4 files (raft-large, no ext)" 1
                     fi
                 fi
             fi
