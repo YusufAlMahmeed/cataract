@@ -534,7 +534,7 @@ discover_web_ports() {
 
 # write_summary: a readable per-target summary.md (open ports + notable hits).
 write_summary() {
-    local target="$1" tdir="$2" s="$2/summary.md"
+    local target="$1" tdir="$2" nmap_txt="$3" s="$2/summary.md"
     {
         echo "# Cataract summary -- $target"
         echo
@@ -542,7 +542,7 @@ write_summary() {
         echo
         echo "## Open ports (nmap)"
         echo '```'
-        grep -E '^[0-9]+/tcp[[:space:]]+open' "$tdir/nmap_full_ports.txt" 2>/dev/null || echo "(no nmap results)"
+        grep -E '^[0-9]+/tcp[[:space:]]+open' "$nmap_txt" 2>/dev/null || echo "(no nmap results)"
         echo '```'
         echo
         echo "## Content discovery"
@@ -561,6 +561,42 @@ write_summary() {
     done_msg "[$target] Summary: $s"
 }
 
+# host_nmap_path: deterministic shared nmap output path for a host, so every
+# target/worker for that host reads the same file.
+host_nmap_path() {
+    local host="$1" nmap_dir="$2" hsafe
+    hsafe="$(printf '%s' "$host" | sed 's/[^A-Za-z0-9._-]/_/g')"
+    printf '%s/%s.txt' "$nmap_dir" "$hsafe"
+}
+
+# ensure_host_nmap: run ONE full-port nmap per unique host, shared across all
+# targets/workers for that host. A flock on <host>.lock serializes it: the
+# first caller runs the scan while any concurrent tmux workers block on the
+# lock, then see the <host>.done marker and reuse the result instead of
+# launching a second -p- scan. (If flock is unavailable, falls back to a
+# best-effort .done check.)
+ensure_host_nmap() {
+    local host="$1" nmap_dir="$2" hsafe
+    hsafe="$(printf '%s' "$host" | sed 's/[^A-Za-z0-9._-]/_/g')"
+    local txt="$nmap_dir/$hsafe.txt" log="$nmap_dir/$hsafe.log"
+    local lock="$nmap_dir/$hsafe.lock" marker="$nmap_dir/$hsafe.done"
+    mkdir -p "$nmap_dir"
+    if command -v flock >/dev/null 2>&1; then
+        (
+            flock 9
+            if [[ ! -f "$marker" ]]; then
+                # shellcheck disable=SC2086  # NMAP_OPTS is intentionally word-split
+                nmap $NMAP_OPTS "$host" -oN "$txt" > "$log" 2>&1
+                touch "$marker"
+            fi
+        ) 9>"$lock"
+    elif [[ ! -f "$marker" ]]; then
+        # shellcheck disable=SC2086  # NMAP_OPTS is intentionally word-split
+        nmap $NMAP_OPTS "$host" -oN "$txt" > "$log" 2>&1
+        touch "$marker"
+    fi
+}
+
 # ============================================================================
 #  Per-target orchestration
 # ============================================================================
@@ -573,11 +609,13 @@ run_target() {
     banner "[$TARGET] Starting enumeration. Output: $TDIR"
     banner "[$TARGET] Press ENTER during a feroxbuster tier to pause/cancel it."
 
-    # Background: full-port service/script scan.
-    local FULLSCAN_OUT="$TDIR/nmap_full_ports.txt"
-    banner "[$TARGET] Full-port nmap scan starting in background ($NMAP_OPTS)..."
-    # shellcheck disable=SC2086  # NMAP_OPTS is intentionally word-split into flags
-    nmap $NMAP_OPTS "$HOST" -oN "$FULLSCAN_OUT" > "$TDIR/nmap_full_ports.log" 2>&1 &
+    # Background: full-port service/script scan, shared per host (scan-once).
+    # The shared dir lives alongside the per-target dirs, so tmux workers for
+    # the same host share one scan via the flock inside ensure_host_nmap.
+    local NMAP_DIR; NMAP_DIR="$(dirname "$TDIR")/_nmap"; mkdir -p "$NMAP_DIR"
+    local FULLSCAN_OUT; FULLSCAN_OUT="$(host_nmap_path "$HOST" "$NMAP_DIR")"
+    banner "[$TARGET] Full-port nmap for $HOST (shared, scan-once) -> $FULLSCAN_OUT"
+    ensure_host_nmap "$HOST" "$NMAP_DIR" &
     local FULLSCAN_PID=$!; BG_PIDS+=("$FULLSCAN_PID")
 
     # Foreground: tier cascade against the chosen service/port.
@@ -605,7 +643,7 @@ run_target() {
     # Aggregate every dir's results into one de-duplicated file, then summarize.
     cat "$TDIR/results.txt" "$TDIR"/port_*/results.txt 2>/dev/null | sort -u > "$TDIR/all_unique_results.txt"
     done_msg "[$TARGET] Combined results: $TDIR/all_unique_results.txt"
-    write_summary "$TARGET" "$TDIR"
+    write_summary "$TARGET" "$TDIR" "$FULLSCAN_OUT"
     done_msg "[$TARGET] ALL DONE. Everything is in $TDIR"
 }
 

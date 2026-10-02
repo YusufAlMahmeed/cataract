@@ -192,10 +192,11 @@ This opens **one window per target** (not tabs) using whichever emulator is inst
 
 ```
 <output_dir>/
-├── index.md                       # links to every target's summary (single/sequential runs)
+├── index.md                       # links to every target's summary
+├── _nmap/                         # one full-port scan per unique host (shared)
+│   ├── 10.10.10.5.txt             # human-readable nmap -oN output
+│   └── 10.10.10.5.log             # raw nmap stdout/stderr
 └── <target-safe-name>/            # e.g. 192.168.51.77_8443
-    ├── nmap_full_ports.txt        # human-readable nmap -oN output
-    ├── nmap_full_ports.log        # raw nmap stdout/stderr
     ├── tier1.log  tier1.json      # per-tier feroxbuster: colorized log + JSON
     ├── tier2.log  tier2.json
     ├── tier3.log  tier3.json
