@@ -413,11 +413,32 @@ fi
 # Why `--json --output <file>` ?
 #   feroxbuster writes JSON to --output (NOT to stdout), so the live colored
 #   view is preserved while we get machine-parseable results in the file.
+# print_estimate: rough base-request count for a tier =
+#   wordlist lines x (1 + number of extensions), or x1 when run without exts.
+# It is a BASE figure: feroxbuster recursion re-runs the list under every
+# discovered directory, so the real total grows with each directory found.
+print_estimate() {
+    local wordlist="$1" no_ext="$2" lines ext_count mult est
+    lines="$(wc -l < "$wordlist" 2>/dev/null | tr -d ' ')"
+    [[ -z "$lines" || "$lines" -eq 0 ]] && return 0
+    if [[ "$no_ext" == "1" ]]; then
+        est=$(( lines ))
+        warn_msg "[est] ~$est base requests ($lines words, no extensions); recursion multiplies this per discovered directory."
+    else
+        # Count non-empty comma-separated extensions (0 if EXTENSIONS is empty).
+        ext_count="$(awk -F, '{c=0; for(i=1;i<=NF;i++) if(length($i)) c++; print c}' <<< "$EXTENSIONS")"
+        mult=$(( 1 + ext_count ))
+        est=$(( lines * mult ))
+        warn_msg "[est] ~$est base requests ($lines words x (1 + $ext_count exts)); recursion multiplies this per discovered directory."
+    fi
+}
+
 # The optional 6th arg (no_ext=1) runs the pass WITHOUT --extensions; used for
 # the raft *files* lists, whose words already include their own extensions.
 ferox_run() {
     local url="$1" log="$2" json="$3" wordlist="$4" label="$5" no_ext="${6:-0}"
     banner "[$url] $label - $wordlist"
+    print_estimate "$wordlist" "$no_ext"
 
     local -a a=( feroxbuster
         --url "$url"
