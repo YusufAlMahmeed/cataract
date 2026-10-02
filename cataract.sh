@@ -204,9 +204,19 @@ EOF
 # ============================================================================
 
 # normalize_target: bare IP/host/host:port -> http://... ; full URLs pass through.
+# Characters allowed in a target. Anything else is rejected, so a crafted line
+# in a targets file (e.g. containing a quote, ';', '$(...)', backtick, space)
+# cannot be smuggled into a launcher command. Covers IPs, hostnames, ports,
+# paths, query strings and IPv6 brackets.  ']' and '[' lead the class; '-' is
+# last so it is a literal, not a range.
+TARGET_ALLOWED_RE='^[][A-Za-z0-9._:/%?=&~-]+$'
 normalize_target() {
     local t="$1"; t="$(echo "$t" | xargs)"
     [[ -z "$t" ]] && { echo ""; return 1; }
+    if [[ ! "$t" =~ $TARGET_ALLOWED_RE ]]; then
+        err_msg "Rejected target (illegal characters): $t" >&2
+        return 1
+    fi
     if [[ "$t" =~ ^https?:// ]]; then echo "$t"; else echo "http://$t"; fi
 }
 
@@ -638,6 +648,16 @@ export_settings() {
     [[ ${#HEADERS[@]} -gt 0 ]] && export CATARACT_HEADERS="$(printf '%s\n' "${HEADERS[@]}")"
 }
 
+# worker_cmd: build a safely-quoted "bash <script> --worker <target> <dir>"
+# command string for `tmux` / `sh -c`. printf '%q' escapes every argument, so a
+# single quote or any odd character in a target or output path can neither
+# break the command nor inject shell (the same approach ferox_run uses).
+worker_cmd() {
+    local c
+    printf -v c '%q ' bash "$SCRIPT_PATH" --worker "$1" "$2"
+    printf '%s' "$c"
+}
+
 # ============================================================================
 #  Single target: run right here (no tmux needed)
 # ============================================================================
@@ -660,16 +680,17 @@ launch_tmux() {
 
     local first_name; first_name="$(safe_name "${TARGETS[0]}")"
     local first_dir="$OUTDIR/$(safe_name "${TARGETS[0]}")"
-    tmux new-session -d -s "$S" -n "$first_name" \
-        "bash '$SCRIPT_PATH' --worker '${TARGETS[0]}' '$first_dir'"
+    local first_cmd; first_cmd="$(worker_cmd "${TARGETS[0]}" "$first_dir")"
+    tmux new-session -d -s "$S" -n "$first_name" "$first_cmd"
 
     tmux set-option -t "$S" base-index 1 \; set-window-option -t "$S" pane-base-index 1 \
         \; set-option -t "$S" renumber-windows on
 
-    local i T name tdir
+    local i T name tdir wcmd
     for (( i=1; i<${#TARGETS[@]}; i++ )); do
         T="${TARGETS[$i]}"; name="$(safe_name "$T")"; tdir="$OUTDIR/$(safe_name "$T")"
-        tmux new-window -t "$S" -n "$name" "bash '$SCRIPT_PATH' --worker '$T' '$tdir'"
+        wcmd="$(worker_cmd "$T" "$tdir")"
+        tmux new-window -t "$S" -n "$name" "$wcmd"
     done
     tmux move-window -r -t "$S"
 
@@ -711,7 +732,7 @@ launch_gui() {
     [[ -z "$term" ]] && { err_msg "No supported GUI terminal found. Unset USE_GUI_TERM to use tmux."; return 1; }
     for T in "${TARGETS[@]}"; do
         name="$(safe_name "$T")"; tdir="$OUTDIR/$name"
-        cmd="bash '$SCRIPT_PATH' --worker '$T' '$tdir'; exec bash"
+        cmd="$(worker_cmd "$T" "$tdir"); exec bash"
         case "$term" in
             gnome-terminal|xfce4-terminal) "$term" --title="$T" -- bash -c "$cmd" & ;;
             konsole)                        "$term" -p tabtitle="$T" -e bash -c "$cmd" & ;;
