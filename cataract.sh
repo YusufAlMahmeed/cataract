@@ -35,6 +35,8 @@
 #            * Per-target summary.md and a combined run index.md.
 #            * Clean Ctrl+C handling: background nmap scans are killed on exit.
 #            * Settings propagate to tmux/GUI worker tabs via exported env.
+#    7.1.0 - Default recursion DEPTH lowered 3 -> 2 (fewer, faster requests by
+#            default; raise with -d when you need deeper recursion).
 #
 #  ------------------------------------------------------------------------
 #  Usage:
@@ -72,7 +74,7 @@ set -uo pipefail
 #  wins.
 # ============================================================================
 : "${THREADS:=50}"                                   # feroxbuster threads
-: "${DEPTH:=3}"                                        # recursion depth
+: "${DEPTH:=2}"                                        # recursion depth (raise with -d)
 : "${EXTENSIONS:=php,html,txt,js,json,bak,zip}"        # appended to each word
 # NMAP_OPTS default is root-aware: as root nmap can do a fast SYN scan, so we
 # add --min-rate 1000; as non-root nmap falls back to a slower connect scan

@@ -31,7 +31,7 @@
   | 3 | `raft-medium-directories.txt` (+ `raft-medium-files.txt`, no-ext pass) | SecLists (optional) |
   | 4 | `raft-large-directories.txt` (+ `raft-large-files.txt`, no-ext pass) | SecLists (optional) |
 - **Auto-enumerates extra web ports** — parses the `nmap` results, finds additional `http`/`https` services (8080, 8443, …), and offers to run the cascade against those too (automatic in `--auto`).
-- **Recursive** directory/file discovery (`feroxbuster`, depth 3 by default) — something `gobuster` doesn't do natively.
+- **Recursive** directory/file discovery (`feroxbuster`, depth 2 by default) — something `gobuster` doesn't do natively.
 - **Self-signed TLS handled** — `feroxbuster -k` is auto-enabled for `https://` targets (and forceable with `-k`), so lab/internal certs don't silently kill your results.
 - **Colorized live output *and* logs *and* JSON** — each tier runs under a pseudo-terminal (via util-linux `script`) so `feroxbuster` keeps its colors on screen while everything is `tee`'d to a log **and** written as JSON for robust `jq`-based de-duplication (falls back to log parsing if `jq` is absent).
 - **Reports** — a per-target `summary.md` (open ports + notable hits) and a combined `index.md` across targets.
@@ -111,7 +111,7 @@ Target: 10.10.10.5
 | `-o <dir>` | output directory (required in non-interactive mode) |
 | `-f <file>` | read targets from a file, one per line |
 | `-t <n>` | feroxbuster threads (default 50) |
-| `-d <n>` | recursion depth (default 3) |
+| `-d <n>` | recursion depth (default 2) |
 | `-x <exts>` | comma-separated extensions |
 | `-w <wordlist>` | use ONE custom wordlist instead of the tier cascade |
 | `-k`, `--insecure` | disable TLS validation (auto-enabled for `https://`) |
@@ -136,7 +136,7 @@ Web content brute-forcing is a trade-off between coverage and time. Rather than 
 
 Tiers 3–4 use the **directories** lists (not the files lists) for two reasons: directory words carry no extension, so appending your extension set is correct instead of producing waste like `index.php.php`, and directories are what feroxbuster's recursion descends into. When the matching `raft-*-files.txt` list is present, Cataract runs it as an extra **filename pass without `--extensions`**, so real filenames are still covered.
 
-After each tier you're asked whether to continue. Stop as soon as you've found what you need — you rarely have to reach Tier 4. All tiers use recursion (depth 3) and the same extension set by default. In `--auto` mode the prompts are skipped and every tier runs unattended.
+After each tier you're asked whether to continue. Stop as soon as you've found what you need — you rarely have to reach Tier 4. All tiers use recursion (depth 2 by default) and the same extension set by default. In `--auto` mode the prompts are skipped and every tier runs unattended.
 
 **Skip the tiers entirely** with a single wordlist of your own:
 
@@ -148,7 +148,7 @@ After each tier you're asked whether to continue. Stop as soon as you've found w
 
 ```bash
 : "${THREADS:=50}"                                # feroxbuster concurrent threads
-: "${DEPTH:=3}"                                    # recursion depth
+: "${DEPTH:=2}"                                    # recursion depth (raise with -d)
 : "${EXTENSIONS:=php,html,txt,js,json,bak,zip}"    # extensions appended to each word
 : "${NMAP_OPTS:=-p- -sV -sC -Pn}"                  # full-port service/script scan
 ```
