@@ -17,28 +17,6 @@
 #            preserving feroxbuster's colorized live output and logging it.
 #
 #  ------------------------------------------------------------------------
-#  Changelog (recent):
-#    6.0.0 - tmux the default multi-target path: one session, one tab per
-#            target, session-scoped styling only. GUI terminals opt-in.
-#    7.0.0 - Major usability + results upgrade:
-#            * Per-target service/port selection in interactive mode (choose
-#              http/https and the port for each target; feroxbuster hits that
-#              exact URL).
-#            * CLI flags for tunables: -t threads, -d depth, -x extensions,
-#              -w custom-wordlist, -k insecure-TLS, -a auto (non-interactive
-#              tiers), -H header (repeatable), --rate-limit.
-#            * -k auto-enabled for https:// targets (self-signed lab certs).
-#            * feroxbuster JSON output + jq-based de-duplication (falls back
-#              to ANSI-stripped log parsing when jq is absent).
-#            * Discovers extra web ports from the nmap results and offers to
-#              enumerate them too (auto in -a mode).
-#            * Per-target summary.md and a combined run index.md.
-#            * Clean Ctrl+C handling: background nmap scans are killed on exit.
-#            * Settings propagate to tmux/GUI worker tabs via exported env.
-#    7.1.0 - Default recursion DEPTH lowered 3 -> 2 (fewer, faster requests by
-#            default; raise with -d when you need deeper recursion).
-#
-#  ------------------------------------------------------------------------
 #  Usage:
 #    Interactive:  ./cataract.sh
 #    Direct:       ./cataract.sh -o <output_dir> <target1> [target2] ...
