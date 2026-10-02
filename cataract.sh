@@ -74,7 +74,17 @@ set -uo pipefail
 : "${THREADS:=50}"                                   # feroxbuster threads
 : "${DEPTH:=3}"                                        # recursion depth
 : "${EXTENSIONS:=php,html,txt,js,json,bak,zip}"        # appended to each word
-: "${NMAP_OPTS:=-p- -sV -sC -Pn}"                      # full-port scan flags
+# NMAP_OPTS default is root-aware: as root nmap can do a fast SYN scan, so we
+# add --min-rate 1000; as non-root nmap falls back to a slower connect scan
+# (warned about at startup). An explicit NMAP_OPTS from the environment is
+# always respected as-is (so this stays overridable).
+if [[ -z "${NMAP_OPTS:-}" ]]; then
+    if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+        NMAP_OPTS="-p- -sV -sC -Pn --min-rate 1000"
+    else
+        NMAP_OPTS="-p- -sV -sC -Pn"
+    fi
+fi
 : "${RATE_LIMIT:=0}"                                   # ferox req/sec (0 = off)
 : "${INSECURE:=0}"                                     # 1 = always add ferox -k
 : "${AUTO:=0}"                                         # 1 = no tier prompts
@@ -324,6 +334,10 @@ check_tools() {
     }
     command -v jq >/dev/null 2>&1 || \
         warn_msg "jq not found -- results will be parsed from logs instead of JSON. sudo apt install jq"
+    if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+        warn_msg "Not running as root: nmap will use a slower TCP connect scan (-sT) and"
+        warn_msg "    skips the --min-rate speed-up. Run with sudo for a faster SYN scan."
+    fi
 }
 
 # ============================================================================

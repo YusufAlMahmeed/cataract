@@ -155,6 +155,8 @@ After each tier you're asked whether to continue. Stop as soon as you've found w
 
 Each tunable can be overridden by a CLI flag (`-t`, `-d`, `-x`, …). The `TIER*_CANDIDATES` arrays just below let you add or reorder wordlist paths.
 
+> **nmap & root:** run Cataract (or at least nmap) as **root** for a fast SYN scan — the default `NMAP_OPTS` then adds `--min-rate 1000`. **Without root**, nmap falls back to a slower TCP connect scan (`-sT`) and Cataract warns you at startup. Setting your own `NMAP_OPTS` overrides this entirely, e.g. `NMAP_OPTS="-p- -sV" ./cataract.sh …`.
+
 ---
 
 ## Multiple targets: tmux tabs, pausing, and stopping
