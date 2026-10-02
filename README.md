@@ -1,5 +1,8 @@
 # Cataract
 
+[![ShellCheck](https://github.com/YusufAlMahmeed/cataract/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/YusufAlMahmeed/cataract/actions/workflows/shellcheck.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 **Tiered, recursive, multi-target web enumeration for authorized web penetration testing.**
 
 > *A cataract is a great waterfall — and that's the idea: your scan cascades down through escalating wordlist tiers until you find what you need.*

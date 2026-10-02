@@ -1,0 +1,18 @@
+name: ShellCheck
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  shellcheck:
+    name: shellcheck -S warning
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run ShellCheck
+        # ubuntu-latest ships shellcheck preinstalled. Fail the build on any
+        # warning-or-worse finding, matching the project's local standard.
+        run: shellcheck -S warning cataract.sh
