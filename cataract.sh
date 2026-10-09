@@ -69,6 +69,7 @@ fi
 : "${INSECURE:=0}"                                     # 1 = always add ferox -k
 : "${AUTO:=0}"                                         # 1 = no tier prompts
 : "${NO_EXT:=0}"                                       # 1 = never append --extensions
+: "${DRY_RUN:=0}"                                      # 1 = print plan and exit
 : "${USE_GUI_TERM:=0}"                                 # 1 = GUI windows opt-in
 : "${EXTRA_PORT_MAX_TIER:=2}"                          # tier cap for discovered
                                                        #   extra web ports
@@ -181,6 +182,8 @@ OPTIONS:
                   pass -w multiple times to run several lists in the given order.
                   Each path is checked to exist before scanning starts.
   --no-ext        Do not append extensions on any pass (filenames-only).
+  --dry-run       Print the resolved targets, wordlists, settings and per-list
+                  request estimates, then exit without scanning.
   -k, --insecure  Disable TLS cert validation (feroxbuster -k). Auto-enabled
                   for https:// targets.
   -a, --auto      Non-interactive: run all tiers without between-tier prompts,
@@ -419,6 +422,7 @@ else
             -x) EXTENSIONS="${2:-}"; shift 2 ;;
             -w) CUSTOM_WORDLISTS+=("${2:-}"); shift 2 ;;
             --no-ext) NO_EXT=1; shift ;;
+            --dry-run) DRY_RUN=1; shift ;;
             -k|--insecure) INSECURE=1; shift ;;
             -a|--auto) AUTO=1; shift ;;
             -H) HEADERS+=("${2:-}"); shift 2 ;;
@@ -442,7 +446,11 @@ else
         done < "$TARGETS_FILE"
     fi
     [[ ${#TARGETS[@]} -eq 0 ]] && { err_msg "No targets provided."; usage; }
-    mkdir -p "$OUTDIR"; check_tools; check_wordlists
+    mkdir -p "$OUTDIR"
+    # --dry-run previews the plan without scanning, so the scanning tools are
+    # not required; wordlists are still validated so the preview is honest.
+    [[ "$DRY_RUN" == "1" ]] || check_tools
+    check_wordlists
 fi
 
 # ============================================================================
@@ -761,6 +769,43 @@ build_index() {
     done_msg "Run index: $idx"
 }
 
+# do_dry_run: print the plan (targets, settings, wordlists + per-list request
+# estimates) and return. Invoked from the launch section when --dry-run is set;
+# no scanning happens. print_estimate honors the global NO_EXT internally.
+do_dry_run() {
+    banner "DRY RUN -- nothing will be scanned."
+    echo "  Output dir : $OUTDIR"
+    echo "  Targets (${#TARGETS[@]}):"
+    local t; for t in "${TARGETS[@]}"; do echo "      - $t"; done
+    echo "  Settings   : threads=$THREADS depth=$DEPTH exts=[$EXTENSIONS] no_ext=$NO_EXT auto=$AUTO insecure=$INSECURE rate_limit=$RATE_LIMIT"
+    if [[ ${#HEADERS[@]} -gt 0 ]]; then
+        echo "  Headers    :"; local h; for h in "${HEADERS[@]}"; do echo "      -H $h"; done
+    fi
+    echo
+    if [[ ${#CUSTOM_WORDLISTS[@]} -gt 0 ]]; then
+        banner "Planned wordlists (custom, in order):"
+        local i wl
+        for i in "${!CUSTOM_WORDLISTS[@]}"; do
+            wl="${CUSTOM_WORDLISTS[$i]}"
+            echo "  [$((i+1))] $wl"
+            print_estimate "$wl" 0
+        done
+    else
+        banner "Planned wordlists (tier cascade):"
+        local row name wl nx
+        for row in "TIER1|$TIER1_WORDLIST|0" "TIER2|$TIER2_WORDLIST|0" \
+                   "TIER3|$TIER3_WORDLIST|0" "TIER3-files|$TIER3_FILES_WORDLIST|1" \
+                   "TIER4|$TIER4_WORDLIST|0" "TIER4-files|$TIER4_FILES_WORDLIST|1"; do
+            IFS='|' read -r name wl nx <<< "$row"
+            [[ -z "$wl" ]] && continue
+            echo "  $name: $wl"
+            print_estimate "$wl" "$nx"
+        done
+    fi
+    echo
+    warn_msg "Dry run complete -- re-run without --dry-run to scan."
+}
+
 # ============================================================================
 #  Worker mode (one target inside a tmux tab / GUI window)
 # ============================================================================
@@ -799,6 +844,13 @@ worker_cmd() {
     printf -v c '%q ' bash "$SCRIPT_PATH" --worker "$1" "$2"
     printf '%s' "$c"
 }
+
+# --dry-run: show the plan and stop before any scanning (all functions are now
+# defined, so the estimates are available).
+if [[ "$DRY_RUN" == "1" ]]; then
+    do_dry_run
+    exit 0
+fi
 
 # ============================================================================
 #  Single target: run right here (no tmux needed)

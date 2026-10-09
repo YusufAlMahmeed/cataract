@@ -109,6 +109,9 @@ Target: 10.10.10.5
 # Fully unattended, tuned, behind a login, gentle on the target
 ./cataract.sh -o results/ -a -t 30 -d 2 --rate-limit 40 \
               -H 'Cookie: session=abc123' https://app.local:8443
+
+# Preview the plan + request estimates without scanning anything
+./cataract.sh -o results/ -w quick.txt -w big.txt --dry-run https://app.local
 ```
 
 | Flag | Meaning |
@@ -120,6 +123,7 @@ Target: 10.10.10.5
 | `-x <exts>` | comma-separated extensions |
 | `-w <wordlist>` | custom wordlist instead of the tier cascade; **repeatable** — runs in the order given (paths checked up front) |
 | `--no-ext` | don't append extensions on any pass (filenames-only) |
+| `--dry-run` | print targets, wordlists, settings and request estimates, then exit without scanning |
 | `-k`, `--insecure` | disable TLS validation (auto-enabled for `https://`) |
 | `-a`, `--auto` | non-interactive: run all tiers, auto-enumerate discovered ports |
 | `-H <header>` | extra HTTP header (repeatable), e.g. `-H 'Cookie: …'` |
