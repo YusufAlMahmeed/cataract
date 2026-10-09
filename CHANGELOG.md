@@ -43,6 +43,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   left by a cut-short scan still yields every complete hit.
 - `NMAP_OPTS` is replaced by `NMAP_FAST_OPTS` + `NMAP_DEEP_OPTS`.
 
+### Fixed
+- The "scan each host once" marker is now **per-run** (`CATARACT_RUN_ID`), so re-running into
+  the same output directory rescans with the current engine instead of silently reusing a
+  previous run's output (which could make a freshly installed RustScan appear unused).
+- Scan banner is engine-accurate (no longer always says "nmap"), the tool now says when it
+  reuses a scan, and RustScan falls back to the nmap sweep if it returns no ports or errors.
+
 ## [7.1.0] - 2026-10-02
 
 ### Changed

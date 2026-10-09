@@ -80,6 +80,10 @@ set -uo pipefail
 : "${NMAP_FAST_OPTS:=-p- -T4 --min-rate 1000 -Pn -n}"  # phase 1 when using nmap
 : "${NMAP_DEEP_OPTS:=-sV -sC -Pn}"                     # phase 2: on open ports
 : "${NMAP_STATS_INTERVAL:=15s}"                        # nmap progress print cadence
+# Groups one invocation's shared scans. Workers inherit it (exported), so the
+# "scan each host once" guard dedupes WITHIN a run but a NEW run always rescans
+# (e.g. after you install rustscan) instead of reusing a previous run's output.
+: "${CATARACT_RUN_ID:=$(date +%s)_$$}"
 : "${RATE_LIMIT:=0}"                                   # ferox req/sec (0 = off)
 : "${INSECURE:=0}"                                     # 1 = always add ferox -k
 : "${AUTO:=0}"                                         # 1 = no tier prompts
@@ -761,10 +765,15 @@ ensure_host_nmap() {
     hsafe="$(printf '%s' "$host" | sed 's/[^A-Za-z0-9._-]/_/g')"
     local fast_txt="$nmap_dir/${hsafe}_fast.txt" fast_log="$nmap_dir/${hsafe}_fast.log"
     local deep_txt="$nmap_dir/${hsafe}_deep.txt" deep_log="$nmap_dir/${hsafe}_deep.log"
-    local lock="$nmap_dir/$hsafe.lock" marker="$nmap_dir/$hsafe.done"
+    # Marker is per-run (CATARACT_RUN_ID): dedupes concurrent workers within one
+    # run, but a fresh run always rescans instead of reusing old output.
+    local lock="$nmap_dir/$hsafe.lock" marker="$nmap_dir/$hsafe.${CATARACT_RUN_ID}.done"
     mkdir -p "$nmap_dir"
     _run_two_phase() {
-        [[ -f "$marker" ]] && return 0
+        if [[ -f "$marker" ]]; then
+            banner "[scan] Reusing this run's port scan for $host."
+            return 0
+        fi
         # Output is shown LIVE (tee to screen + log) so you can always see it is
         # working, not stuck.
         local ports engine; engine="$(pick_fast_scanner)"
@@ -774,7 +783,13 @@ ensure_host_nmap() {
             # shellcheck disable=SC2086  # RUSTSCAN_OPTS is intentionally word-split
             rustscan -a "$host" $RUSTSCAN_OPTS -g 2>&1 | tee "$fast_txt"
             ports="$(rustscan_open_ports "$fast_txt")"
-        else
+            # If rustscan found nothing or errored, fall back to the nmap sweep.
+            if [[ -z "$ports" ]]; then
+                warn_msg "[scan] rustscan returned no ports (or failed) -- falling back to nmap sweep."
+                engine="nmap"
+            fi
+        fi
+        if [[ "$engine" == "nmap" ]]; then
             banner "[scan] Phase 1/2: nmap fast all-ports sweep of $host (this can take a few minutes)..."
             # --stats-every makes nmap print periodic "% done / ETC" progress.
             # shellcheck disable=SC2086  # NMAP_FAST_OPTS is intentionally word-split
@@ -832,9 +847,9 @@ run_target() {
     local FAST_OUT; FAST_OUT="$(host_nmap_path "$HOST" "$NMAP_DIR" fast)"
     local FULLSCAN_OUT; FULLSCAN_OUT="$(host_nmap_path "$HOST" "$NMAP_DIR" deep)"
     CURRENT_NMAP_TXT="$FULLSCAN_OUT"
-    banner "[$TARGET] nmap phase 1/2 for $HOST: fast port sweep, then deep scan on open ports..."
+    banner "[$TARGET] Port scan for $HOST (phase 1: fast discovery, phase 2: deep service scan)..."
     ensure_host_nmap "$HOST" "$NMAP_DIR"
-    done_msg "[$TARGET] nmap done. fast: $FAST_OUT | deep: $FULLSCAN_OUT"
+    done_msg "[$TARGET] Port scan complete. fast: $FAST_OUT | deep: $FULLSCAN_OUT"
 
     # Show open ports and the web services nmap identified, BEFORE enumerating.
     local openports; openports="$(nmap_open_ports "$FAST_OUT")"
@@ -956,7 +971,7 @@ SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 # Propagate flag-set settings into worker tabs (they are separate bash procs).
 export_settings() {
     export THREADS DEPTH EXTENSIONS FAST_SCANNER RUSTSCAN_OPTS \
-           NMAP_FAST_OPTS NMAP_DEEP_OPTS NMAP_STATS_INTERVAL \
+           NMAP_FAST_OPTS NMAP_DEEP_OPTS NMAP_STATS_INTERVAL CATARACT_RUN_ID \
            RATE_LIMIT INSECURE AUTO NO_EXT USE_GUI_TERM EXTRA_PORT_MAX_TIER
     # Declare then assign separately (SC2155): keep printf's exit status visible.
     local hdrs=""
