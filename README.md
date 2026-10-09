@@ -118,7 +118,8 @@ Target: 10.10.10.5
 | `-t <n>` | feroxbuster threads (default 50) |
 | `-d <n>` | recursion depth (default 2) |
 | `-x <exts>` | comma-separated extensions |
-| `-w <wordlist>` | use ONE custom wordlist instead of the tier cascade |
+| `-w <wordlist>` | custom wordlist instead of the tier cascade; **repeatable** — runs in the order given (paths checked up front) |
+| `--no-ext` | don't append extensions on any pass (filenames-only) |
 | `-k`, `--insecure` | disable TLS validation (auto-enabled for `https://`) |
 | `-a`, `--auto` | non-interactive: run all tiers, auto-enumerate discovered ports |
 | `-H <header>` | extra HTTP header (repeatable), e.g. `-H 'Cookie: …'` |
@@ -143,11 +144,17 @@ Tiers 3–4 use the **directories** lists (not the files lists) for two reasons:
 
 After each tier you're asked whether to continue. Stop as soon as you've found what you need — you rarely have to reach Tier 4. All tiers use recursion (depth 2 by default) and the same extension set by default. In `--auto` mode the prompts are skipped and every tier runs unattended.
 
-**Skip the tiers entirely** with a single wordlist of your own:
+**Skip the tiers entirely** with your own wordlists. `-w` is repeatable and the lists run **in the order you give them**; every path is checked to exist before any scanning starts:
 
 ```bash
+# one custom list
 ./cataract.sh -o results/ -w /path/to/mylist.txt https://app.local
+
+# several, in order (quick → thorough), filenames-only
+./cataract.sh -o results/ -w quick.txt -w big.txt -w ~/custom/api.txt --no-ext https://app.local
 ```
+
+Interactive mode asks for these paths too (one per line, blank to finish).
 
 ### Tunables (top of the script)
 

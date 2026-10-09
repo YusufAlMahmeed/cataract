@@ -68,7 +68,7 @@ fi
 : "${RATE_LIMIT:=0}"                                   # ferox req/sec (0 = off)
 : "${INSECURE:=0}"                                     # 1 = always add ferox -k
 : "${AUTO:=0}"                                         # 1 = no tier prompts
-: "${CUSTOM_WORDLIST:=}"                               # -w: single wordlist run
+: "${NO_EXT:=0}"                                       # 1 = never append --extensions
 : "${USE_GUI_TERM:=0}"                                 # 1 = GUI windows opt-in
 : "${EXTRA_PORT_MAX_TIER:=2}"                          # tier cap for discovered
                                                        #   extra web ports
@@ -123,6 +123,15 @@ if [[ -n "${CATARACT_HEADERS:-}" ]]; then
     [[ ${#HEADERS[@]} -gt 0 && -z "${HEADERS[-1]}" ]] && unset 'HEADERS[-1]'
 fi
 
+# Custom wordlists (-w, repeatable). When non-empty they REPLACE the tier
+# cascade and run in the exact order given. Re-hydrated in worker tabs from the
+# exported CATARACT_CUSTOM_WORDLISTS (newline-joined, same trick as HEADERS).
+CUSTOM_WORDLISTS=()
+if [[ -n "${CATARACT_CUSTOM_WORDLISTS:-}" ]]; then
+    mapfile -t CUSTOM_WORDLISTS <<< "$CATARACT_CUSTOM_WORDLISTS"
+    [[ ${#CUSTOM_WORDLISTS[@]} -gt 0 && -z "${CUSTOM_WORDLISTS[-1]}" ]] && unset 'CUSTOM_WORDLISTS[-1]'
+fi
+
 # ============================================================================
 #  Colors + logging helpers
 # ============================================================================
@@ -168,7 +177,10 @@ OPTIONS:
   -t <n>          feroxbuster threads          (default: $THREADS)
   -d <n>          Recursion depth              (default: $DEPTH)
   -x <exts>       Comma-separated extensions   (default: $EXTENSIONS)
-  -w <wordlist>   Use ONE custom wordlist instead of the tier cascade.
+  -w <wordlist>   Use a custom wordlist instead of the tier cascade. Repeatable:
+                  pass -w multiple times to run several lists in the given order.
+                  Each path is checked to exist before scanning starts.
+  --no-ext        Do not append extensions on any pass (filenames-only).
   -k, --insecure  Disable TLS cert validation (feroxbuster -k). Auto-enabled
                   for https:// targets.
   -a, --auto      Non-interactive: run all tiers without between-tier prompts,
@@ -271,10 +283,21 @@ resolve_wordlists() {
 }
 
 check_wordlists() {
-    # A custom wordlist (-w) bypasses the tier system entirely.
-    if [[ -n "$CUSTOM_WORDLIST" ]]; then
-        [[ -f "$CUSTOM_WORDLIST" ]] || { err_msg "Custom wordlist not found: $CUSTOM_WORDLIST"; exit 1; }
-        done_msg "Custom wordlist: $CUSTOM_WORDLIST (tier cascade disabled)"; echo; return
+    # Custom wordlists (-w, one or more) bypass the tier system entirely and
+    # run in the given order. Validate EVERY path up front (fail-fast) so a
+    # typo in list #3 doesn't surface 20 minutes into a scan.
+    if [[ ${#CUSTOM_WORDLISTS[@]} -gt 0 ]]; then
+        banner "Custom wordlists (tier cascade disabled), in order:"
+        local wl missing=()
+        for wl in "${CUSTOM_WORDLISTS[@]}"; do
+            if [[ -f "$wl" && -r "$wl" ]]; then done_msg "  $wl"
+            else err_msg "  MISSING or unreadable: $wl"; missing+=("$wl"); fi
+        done
+        if [[ ${#missing[@]} -gt 0 ]]; then
+            err_msg "${#missing[@]} custom wordlist(s) not found -- fix the path(s) before continuing."
+            exit 1
+        fi
+        echo; return
     fi
     resolve_wordlists
     local ok=1
@@ -353,6 +376,20 @@ run_interactive() {
     done
     [[ ${#TARGETS[@]} -eq 0 ]] && { err_msg "No targets entered."; exit 1; }
 
+    # Optional: custom wordlists, in run order. Blank line keeps the tier cascade.
+    echo
+    echo "Custom wordlists: enter full paths one per line, in the order to run them."
+    echo "Blank line = use the default tier cascade."
+    local wlp
+    while true; do
+        read -rp "Wordlist path (blank to finish): " wlp
+        [[ -z "$wlp" ]] && break
+        wlp="$(echo "$wlp" | xargs)"      # trim
+        wlp="${wlp/#\~/$HOME}"            # expand a leading ~
+        if [[ -f "$wlp" && -r "$wlp" ]]; then CUSTOM_WORDLISTS+=("$wlp"); done_msg "  added: $wlp"
+        else warn_msg "  not found/readable, skipped: $wlp"; fi
+    done
+
     echo; done_msg "Output dir: $OUTDIR"; done_msg "Targets (${#TARGETS[@]}):"
     local t; for t in "${TARGETS[@]}"; do echo "    - $t"; done
     echo
@@ -380,7 +417,8 @@ else
             -t) THREADS="${2:-}"; shift 2 ;;
             -d) DEPTH="${2:-}"; shift 2 ;;
             -x) EXTENSIONS="${2:-}"; shift 2 ;;
-            -w) CUSTOM_WORDLIST="${2:-}"; shift 2 ;;
+            -w) CUSTOM_WORDLISTS+=("${2:-}"); shift 2 ;;
+            --no-ext) NO_EXT=1; shift ;;
             -k|--insecure) INSECURE=1; shift ;;
             -a|--auto) AUTO=1; shift ;;
             -H) HEADERS+=("${2:-}"); shift 2 ;;
@@ -431,6 +469,8 @@ fi
 # discovered directory, so the real total grows with each directory found.
 print_estimate() {
     local wordlist="$1" no_ext="$2" lines ext_count mult est
+    # Global --no-ext (NO_EXT=1) disables extensions for every pass.
+    [[ "${NO_EXT:-0}" == "1" ]] && no_ext=1
     lines="$(wc -l < "$wordlist" 2>/dev/null | tr -d ' ')"
     [[ -z "$lines" || "$lines" -eq 0 ]] && return 0
     if [[ "$no_ext" == "1" ]]; then
@@ -449,6 +489,8 @@ print_estimate() {
 # the raft *files* lists, whose words already include their own extensions.
 ferox_run() {
     local url="$1" log="$2" json="$3" wordlist="$4" label="$5" no_ext="${6:-0}"
+    # Global --no-ext (NO_EXT=1) forces every pass to skip --extensions.
+    [[ "${NO_EXT:-0}" == "1" ]] && no_ext=1
     banner "[$url] $label - $wordlist"
     print_estimate "$wordlist" "$no_ext"
 
@@ -510,8 +552,19 @@ run_cascade() {
     local url="$1" dir="$2" max_tier="${3:-4}"
     mkdir -p "$dir"
 
-    if [[ -n "$CUSTOM_WORDLIST" ]]; then
-        ferox_run "$url" "$dir/custom.log" "$dir/custom.json" "$CUSTOM_WORDLIST" "CUSTOM"
+    # Custom wordlists replace the tier cascade and run in insertion order.
+    if [[ ${#CUSTOM_WORDLISTS[@]} -gt 0 ]]; then
+        local i wl count=${#CUSTOM_WORDLISTS[@]}
+        # On discovered extra ports (max_tier < 4) run only the first list to
+        # keep those secondary scans light.
+        [[ $max_tier -lt 4 ]] && count=1
+        for (( i=0; i<count; i++ )); do
+            wl="${CUSTOM_WORDLISTS[$i]}"
+            # Prompt between lists (not before the first); --auto skips prompts.
+            if [[ $i -gt 0 ]] && ! prompt_continue "custom wordlist $((i+1)) ($(basename "$wl"))"; then break; fi
+            ferox_run "$url" "$dir/custom$((i+1)).log" "$dir/custom$((i+1)).json" \
+                "$wl" "CUSTOM $((i+1)) ($(basename "$wl"))"
+        done
         dedup_dir "$dir"; return
     fi
 
@@ -727,11 +780,14 @@ SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 # Propagate flag-set settings into worker tabs (they are separate bash procs).
 export_settings() {
     export THREADS DEPTH EXTENSIONS NMAP_OPTS RATE_LIMIT INSECURE AUTO \
-           CUSTOM_WORDLIST USE_GUI_TERM EXTRA_PORT_MAX_TIER
+           NO_EXT USE_GUI_TERM EXTRA_PORT_MAX_TIER
     # Declare then assign separately (SC2155): keep printf's exit status visible.
     local hdrs=""
     [[ ${#HEADERS[@]} -gt 0 ]] && hdrs="$(printf '%s\n' "${HEADERS[@]}")"
     [[ -n "$hdrs" ]] && export CATARACT_HEADERS="$hdrs"
+    local cwl=""
+    [[ ${#CUSTOM_WORDLISTS[@]} -gt 0 ]] && cwl="$(printf '%s\n' "${CUSTOM_WORDLISTS[@]}")"
+    [[ -n "$cwl" ]] && export CATARACT_CUSTOM_WORDLISTS="$cwl"
 }
 
 # worker_cmd: build a safely-quoted "bash <script> --worker <target> <dir>"
