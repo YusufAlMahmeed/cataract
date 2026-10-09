@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [7.2.0] - 2026-10-09
 
 ### Added
+- **Scan-first vs known-service flow** — a **bare host/IP** is now scanned first and whatever
+  serves http/https (on any port) is enumerated, instead of guessing port 80. A **full URL** or
+  **host:port** is treated as a known service and enumerated as-is (its port scan runs in the
+  background). Interactive mode asks, per bare host, whether you already know the service(s)/
+  port(s); if yes you supply one or more, if no it scans first. Fixes the old illogical prompt
+  that asked for service/port before any scan.
 - **Two-phase scan** — a fast all-ports sweep finds every open port, then a deep `nmap -sV -sC`
   scan (`NMAP_DEEP_OPTS`) runs on just those ports. Both outputs are kept (`<host>_fast.txt`
   and `<host>_deep.txt`). This runs **before** web enumeration, so the open ports and the web

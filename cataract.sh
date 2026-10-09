@@ -23,13 +23,15 @@
 #    From file:    ./cataract.sh -o <output_dir> -f <targets_file>
 #    Help:         ./cataract.sh -h
 #
-#    Targets accept any of:
-#        192.168.51.77          (bare IP        -> http://192.168.51.77)
-#        192.168.51.77:8080     (host:port      -> http://192.168.51.77:8080)
-#        http://192.168.51.77   (full URL, used as-is)
-#        https://host:8443/path (full URL, used as-is; -k auto-enabled)
-#    In INTERACTIVE mode you are asked for the service (http/https) and port
-#    for each bare target, so you control exactly what gets scanned.
+#    Targets:
+#        192.168.51.77          bare host  -> SCAN FIRST, then enumerate the
+#                                             http/https services the scan finds
+#        192.168.51.77:8080     host:port  -> enumerated as given (http)
+#        http://192.168.51.77   full URL   -> enumerated as-is
+#        https://host:8443/path full URL   -> enumerated as-is; -k auto-enabled
+#    In INTERACTIVE mode, for a bare host you are asked whether you already know
+#    the service(s)/port(s): if yes you supply them (and the scan runs in the
+#    background); if no, it is scanned first and discovered services enumerated.
 #
 #  ------------------------------------------------------------------------
 #  Pause / cancel / navigate:
@@ -166,8 +168,8 @@ err_msg()  { echo -e "${C_RED}${C_BOLD}[x]${C_RESET} $1"; }
 # ============================================================================
 #  Runtime state
 # ============================================================================
-OUTDIR=""; TARGETS_FILE=""; TARGETS=(); WORKER_MODE=0
-WORKER_TARGET=""; WORKER_DIR=""; norm=""
+OUTDIR=""; TARGETS_FILE=""; TARGETS=(); MODES=(); WORKER_MODE=0
+WORKER_TARGET=""; WORKER_DIR=""; WORKER_MODE_KIND="known"
 TIER1_WORDLIST=""; TIER2_WORDLIST=""; TIER3_WORDLIST=""; TIER4_WORDLIST=""
 TIER3_FILES_WORDLIST=""; TIER4_FILES_WORDLIST=""
 BG_PIDS=()   # background nmap PIDs, so the trap can reap them
@@ -239,7 +241,9 @@ OPTIONS:
                   targets).
   -h, --help      Show this help.
 
-TARGETS may be bare IPs, host:port, or full URLs (bare -> http://).
+TARGETS: a full URL or host:port is enumerated as given; a BARE host/IP is
+scanned first and whatever serves http/https is then enumerated. Interactive
+mode asks, per bare host, whether you already know the service(s)/port(s).
 MULTI-TARGET opens one tmux TAB per target in a single window (default).
 
 ENV:
@@ -254,21 +258,33 @@ EOF
 #  Target helpers
 # ============================================================================
 
-# normalize_target: bare IP/host/host:port -> http://... ; full URLs pass through.
 # Characters allowed in a target. Anything else is rejected, so a crafted line
 # in a targets file (e.g. containing a quote, ';', '$(...)', backtick, space)
 # cannot be smuggled into a launcher command. Covers IPs, hostnames, ports,
 # paths, query strings and IPv6 brackets.  ']' and '[' lead the class; '-' is
 # last so it is a literal, not a range.
 TARGET_ALLOWED_RE='^[][A-Za-z0-9._:/%?=&~-]+$'
-normalize_target() {
-    local t="$1"; t="$(echo "$t" | xargs)"
-    [[ -z "$t" ]] && { echo ""; return 1; }
+
+# classify_target: echo "<mode>|<target>" for a raw input, or return 1 if empty
+# or rejected. Two modes:
+#   known    -> a full URL, or host:port (an explicit service we enumerate as-is)
+#   discover -> a bare host/IP: scan FIRST, then enumerate whatever serves
+#               http/https (you can't pick a port before you've scanned).
+classify_target() {
+    local t; t="$(echo "$1" | xargs)"
+    [[ -z "$t" ]] && return 1
     if [[ ! "$t" =~ $TARGET_ALLOWED_RE ]]; then
-        err_msg "Rejected target (illegal characters): $t" >&2
-        return 1
+        err_msg "Rejected target (illegal characters): $t" >&2; return 1
     fi
-    if [[ "$t" =~ ^https?:// ]]; then echo "$t"; else echo "http://$t"; fi
+    if [[ "$t" =~ ^https?:// ]]; then        echo "known|$t"
+    elif [[ "$t" =~ ^[^/]+:[0-9]+$ ]]; then  echo "known|http://$t"
+    else                                     echo "discover|$t"; fi
+}
+
+# add_target: classify a raw input and push onto the parallel TARGETS/MODES arrays.
+add_target() {
+    local res; res="$(classify_target "$1")" || return 1
+    MODES+=("${res%%|*}"); TARGETS+=("${res#*|}")
 }
 
 # safe_name: filesystem-safe dir name from a URL (scheme stripped, :/ -> _).
@@ -289,32 +305,46 @@ port_of() {
     else [[ "$u" == https://* ]] && echo 443 || echo 80; fi
 }
 
-# build_target_interactive: ask the user for service + port for a bare target.
-# Full URLs are accepted verbatim. This is the "choose service and port for
-# each target" flow -- the composed URL is exactly what feroxbuster will hit.
-build_target_interactive() {
-    local raw; raw="$(echo "$1" | xargs)"
-    [[ -z "$raw" ]] && { echo ""; return 1; }
-    if [[ "$raw" =~ ^https?:// ]]; then echo "$raw"; return 0; fi
-
-    local svc=""
-    while :; do
-        read -rp "    Service for '$raw' [http/https] (default http): " svc
-        svc="${svc:-http}"
-        [[ "$svc" == http || "$svc" == https ]] && break
-        warn_msg "    Please enter 'http' or 'https'."
-    done
-
-    if [[ "$raw" == *:* ]]; then
-        # Port already supplied as host:port; keep it, just apply the scheme.
-        echo "$svc://$raw"
-    else
-        local defport=80; [[ "$svc" == https ]] && defport=443
-        local port=""
-        read -rp "    Port for '$raw' (default $defport): " port
-        port="${port:-$defport}"
-        echo "$svc://$raw:$port"
+# prompt_target_interactive: read one target and push it (with its mode) onto
+# TARGETS/MODES. For a bare host it asks whether the user already knows the web
+# service(s)/port(s): if yes they supply them (mode known, scan runs in the
+# background); if no, the host is scanned first and discovered services are
+# enumerated (mode discover). A full URL is taken as-is (known). Returns 1 on
+# a blank line (caller stops reading).
+prompt_target_interactive() {
+    local raw; read -rp "Target (host/IP or URL, blank to finish): " raw
+    raw="$(echo "$raw" | xargs)"
+    [[ -z "$raw" ]] && return 1
+    if [[ ! "$raw" =~ $TARGET_ALLOWED_RE ]]; then warn_msg "  rejected (illegal characters)"; return 0; fi
+    if [[ "$raw" =~ ^https?:// ]]; then
+        TARGETS+=("$raw"); MODES+=("known"); done_msg "  known URL: $raw"; return 0
     fi
+
+    local host="${raw%%:*}"              # strip any :port the user typed
+    local ans
+    read -rp "  Do you already know the web service(s)/port(s) for '$host'? [y/N] " ans
+    if [[ ! "$ans" =~ ^[Yy]$ ]]; then
+        TARGETS+=("$host"); MODES+=("discover")
+        done_msg "  will scan '$host' first, then enumerate discovered web services."
+        return 0
+    fi
+
+    # Known: collect one or more service/port pairs for this host.
+    local svc port defport added=0
+    while true; do
+        read -rp "    Service [http/https] (blank to finish this host): " svc
+        [[ -z "$svc" ]] && break
+        [[ "$svc" == http || "$svc" == https ]] || { warn_msg "    enter 'http' or 'https'"; continue; }
+        defport=80; [[ "$svc" == https ]] && defport=443
+        read -rp "    Port (default $defport): " port; port="${port:-$defport}"
+        TARGETS+=("$svc://$host:$port"); MODES+=("known"); added=1
+        done_msg "    added: $svc://$host:$port"
+    done
+    if [[ $added -eq 0 ]]; then
+        TARGETS+=("$host"); MODES+=("discover")
+        warn_msg "  no service entered -> will scan '$host' first instead."
+    fi
+    return 0
 }
 
 # ============================================================================
@@ -425,15 +455,11 @@ run_interactive() {
     read -rp "Output directory [./cataract_$(date +%Y%m%d_%H%M%S)]: " OUTDIR
     [[ -z "$OUTDIR" ]] && OUTDIR="./cataract_$(date +%Y%m%d_%H%M%S)"
     mkdir -p "$OUTDIR"; echo
-    echo "Enter targets one per line (bare IP/host is fine)."
-    echo "You'll be asked for the service (http/https) and port for each."
-    echo "Blank line to finish."
-    local raw url
-    while true; do
-        read -rp "Target: " raw
-        [[ -z "$raw" ]] && break
-        url="$(build_target_interactive "$raw")" && [[ -n "$url" ]] && TARGETS+=("$url")
-    done
+    echo "Enter targets one per line. A full URL or host:port is enumerated as given."
+    echo "For a bare host/IP you'll be asked whether you already know the web"
+    echo "service(s)/port(s) -- if not, it is scanned first and discovered services"
+    echo "are enumerated. Blank line to finish."
+    while prompt_target_interactive; do :; done
     [[ ${#TARGETS[@]} -eq 0 ]] && { err_msg "No targets entered."; exit 1; }
 
     # Optional: custom wordlists, in run order. Blank line keeps the tier cascade.
@@ -451,7 +477,11 @@ run_interactive() {
     done
 
     echo; done_msg "Output dir: $OUTDIR"; done_msg "Targets (${#TARGETS[@]}):"
-    local t; for t in "${TARGETS[@]}"; do echo "    - $t"; done
+    local i
+    for i in "${!TARGETS[@]}"; do
+        if [[ "${MODES[$i]}" == "discover" ]]; then echo "    - ${TARGETS[$i]}  (scan first, enumerate discovered)"
+        else echo "    - ${TARGETS[$i]}  (known)"; fi
+    done
     echo
     local c; read -rp "$(echo -e "${C_YELLOW}Proceed? [Y/n] ${C_RESET}")" c
     [[ "$c" =~ ^[Nn]$ ]] && { err_msg "Cancelled."; exit 1; }
@@ -466,7 +496,7 @@ run_interactive() {
 case "${1:-}" in -h|--help) ;; *) check_platform ;; esac
 
 if [[ "${1:-}" == "--worker" ]]; then
-    WORKER_MODE=1; WORKER_TARGET="${2:-}"; WORKER_DIR="${3:-}"; resolve_wordlists
+    WORKER_MODE=1; WORKER_TARGET="${2:-}"; WORKER_DIR="${3:-}"; WORKER_MODE_KIND="${4:-known}"; resolve_wordlists
 elif [[ $# -eq 0 ]]; then
     check_tools; run_interactive; check_wordlists
 else
@@ -488,11 +518,11 @@ else
             -h|--help) usage 0 ;;
             --) shift; break ;;
             -*) err_msg "Unknown option: $1"; usage ;;
-            *)  norm="$(normalize_target "$1")" && [[ -n "$norm" ]] && TARGETS+=("$norm"); shift ;;
+            *)  add_target "$1"; shift ;;
         esac
     done
     while [[ $# -gt 0 ]]; do
-        norm="$(normalize_target "$1")" && [[ -n "$norm" ]] && TARGETS+=("$norm"); shift
+        add_target "$1"; shift
     done
 
     [[ -z "$OUTDIR" ]] && { err_msg "Output directory (-o) is required in non-interactive mode."; usage; }
@@ -500,7 +530,7 @@ else
         [[ -f "$TARGETS_FILE" ]] || { err_msg "Targets file not found: $TARGETS_FILE"; exit 1; }
         while IFS= read -r line || [[ -n "$line" ]]; do
             [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
-            norm="$(normalize_target "$line")" && [[ -n "$norm" ]] && TARGETS+=("$norm")
+            add_target "$line"
         done < "$TARGETS_FILE"
     fi
     [[ ${#TARGETS[@]} -eq 0 ]] && { err_msg "No targets provided."; usage; }
@@ -877,29 +907,23 @@ finalize_target() {
 #  Per-target orchestration
 # ============================================================================
 run_target() {
-    local TARGET="$1" TDIR="$2"
+    local TARGET="$1" TDIR="$2" MODE="${3:-known}"
     mkdir -p "$TDIR"
-    local HOST; HOST="$(host_only "$TARGET")"
-    local PPORT; PPORT="$(port_of "$TARGET")"
+    local HOST PPORT=""
+    HOST="$(host_only "$TARGET")"
+    [[ "$MODE" == "known" ]] && PPORT="$(port_of "$TARGET")"
     # Record for the interrupt handler so a stop still saves this target.
     CURRENT_TARGET="$TARGET"; CURRENT_TDIR="$TDIR"; CURRENT_OUTDIR="$(dirname "$TDIR")"
 
     banner "[$TARGET] Starting enumeration. Output: $TDIR"
     banner "[$TARGET] Press ENTER during a feroxbuster tier to pause/cancel it."
 
-    # nmap FIRST (two-phase, shared per host). We wait for it before web
-    # enumeration so we know which ports actually serve http/https -- they may
-    # be on non-standard ports -- and can target them instead of guessing.
     local NMAP_DIR; NMAP_DIR="$(dirname "$TDIR")/_nmap"; mkdir -p "$NMAP_DIR"
     local FAST_OUT; FAST_OUT="$(host_nmap_path "$HOST" "$NMAP_DIR" fast)"
     local FULLSCAN_OUT; FULLSCAN_OUT="$(host_nmap_path "$HOST" "$NMAP_DIR" deep)"
     CURRENT_NMAP_TXT="$FULLSCAN_OUT"
-    banner "[$TARGET] Port scan for $HOST (phase 1: fast discovery, phase 2: deep service scan)..."
-    ensure_host_nmap "$HOST" "$NMAP_DIR"
-    done_msg "[$TARGET] Port scan complete. fast: $FAST_OUT | deep: $FULLSCAN_OUT"
 
-    # Optional UDP scan: start in the BACKGROUND (it's slow) during web enum,
-    # then wait for it at the end. Shared per host, like the TCP scan.
+    # Optional UDP scan: always in the BACKGROUND (it's slow), waited for at the end.
     local UDP_PID=""
     if [[ "$UDP_SCAN" == "1" ]]; then
         CURRENT_UDP_TXT="$(host_nmap_path "$HOST" "$NMAP_DIR" udp)"
@@ -908,34 +932,56 @@ run_target() {
         UDP_PID=$!; BG_PIDS+=("$UDP_PID")
     fi
 
-    # Show open ports and the web services nmap identified, BEFORE enumerating.
-    # Read them from the DEEP file: it is always nmap -oN format (the fast file
-    # may be rustscan's own format), and it is the authoritative open-port set.
-    local openports; openports="$(nmap_open_ports "$FULLSCAN_OUT")"
-    [[ -n "$openports" ]] && banner "[$TARGET] Open ports: $openports" \
-        || warn_msg "[$TARGET] No open ports found."
-    local extra=() e p
-    mapfile -t extra < <(discover_web_ports "$FULLSCAN_OUT" "$HOST" "$PPORT")
-    if [[ ${#extra[@]} -gt 0 ]]; then
-        banner "[$TARGET] Web services nmap found (besides the chosen $TARGET):"
-        for e in "${extra[@]}"; do echo "      - $e"; done
-    fi
-    # Note if the user's chosen port wasn't seen open (we still enumerate it).
-    if [[ -n "$openports" && ",$openports," != *",$PPORT,"* ]]; then
-        warn_msg "[$TARGET] Chosen port $PPORT not reported open by nmap -- enumerating it anyway."
-    fi
+    local openports="" extra=() e p
+    if [[ "$MODE" == "known" ]]; then
+        # KNOWN service: enumerate it NOW while the port scan runs in the
+        # background (you already told us the URL), then add any extra web
+        # services the scan turns up.
+        banner "[$TARGET] Known service -- enumerating now; port scan runs in the background."
+        ensure_host_nmap "$HOST" "$NMAP_DIR" &
+        local TCP_PID=$!; BG_PIDS+=("$TCP_PID")
 
-    # Primary tier cascade against the chosen service/port.
-    run_cascade "$TARGET" "$TDIR" 4
+        run_cascade "$TARGET" "$TDIR" 4
 
-    # Then enumerate the extra web services nmap found (auto or on prompt).
-    if [[ ${#extra[@]} -gt 0 ]]; then
-        for e in "${extra[@]}"; do
-            if prompt_continue "enumerate discovered service $e"; then
-                p="$(port_of "$e")"
-                run_cascade "$e" "$TDIR/port_$p" "$EXTRA_PORT_MAX_TIER"
-            fi
-        done
+        if kill -0 "$TCP_PID" 2>/dev/null; then
+            banner "[$TARGET] Waiting for the background port scan to finish..."; wait "$TCP_PID"
+        fi
+        done_msg "[$TARGET] Port scan complete. fast: $FAST_OUT | deep: $FULLSCAN_OUT"
+        openports="$(nmap_open_ports "$FULLSCAN_OUT")"
+        [[ -n "$openports" ]] && banner "[$TARGET] Open ports: $openports"
+        [[ -n "$openports" && ",$openports," != *",$PPORT,"* ]] && \
+            warn_msg "[$TARGET] Chosen port $PPORT not reported open by nmap (enumerated anyway)."
+        mapfile -t extra < <(discover_web_ports "$FULLSCAN_OUT" "$HOST" "$PPORT")
+        if [[ ${#extra[@]} -gt 0 ]]; then
+            banner "[$TARGET] Extra web services nmap found:"
+            for e in "${extra[@]}"; do echo "      - $e"; done
+            for e in "${extra[@]}"; do
+                if prompt_continue "enumerate discovered service $e"; then
+                    p="$(port_of "$e")"; run_cascade "$e" "$TDIR/port_$p" "$EXTRA_PORT_MAX_TIER"
+                fi
+            done
+        fi
+    else
+        # DISCOVER: scan FIRST, then enumerate whatever serves http/https. No
+        # guessed port -- the open web services come from the scan.
+        banner "[$TARGET] Scan-first: running the port scan, then enumerating discovered web services..."
+        ensure_host_nmap "$HOST" "$NMAP_DIR"
+        done_msg "[$TARGET] Port scan complete. fast: $FAST_OUT | deep: $FULLSCAN_OUT"
+        openports="$(nmap_open_ports "$FULLSCAN_OUT")"
+        [[ -n "$openports" ]] && banner "[$TARGET] Open ports: $openports" \
+            || warn_msg "[$TARGET] No open ports found on $HOST."
+        mapfile -t extra < <(discover_web_ports "$FULLSCAN_OUT" "$HOST" "")
+        if [[ ${#extra[@]} -eq 0 ]]; then
+            warn_msg "[$TARGET] No http/https services found on $HOST -- nothing to enumerate."
+        else
+            banner "[$TARGET] Web services found (${#extra[@]}):"
+            for e in "${extra[@]}"; do echo "      - $e"; done
+            for e in "${extra[@]}"; do
+                if prompt_continue "enumerate web service $e"; then
+                    p="$(port_of "$e")"; run_cascade "$e" "$TDIR/port_$p" 4
+                fi
+            done
+        fi
     fi
 
     # Wait out the background UDP scan (if any) so its results are in the summary.
@@ -987,7 +1033,11 @@ do_dry_run() {
     banner "DRY RUN -- nothing will be scanned."
     echo "  Output dir : $OUTDIR"
     echo "  Targets (${#TARGETS[@]}):"
-    local t; for t in "${TARGETS[@]}"; do echo "      - $t"; done
+    local i
+    for i in "${!TARGETS[@]}"; do
+        if [[ "${MODES[$i]}" == "discover" ]]; then echo "      - ${TARGETS[$i]}  (scan first, enumerate discovered web services)"
+        else echo "      - ${TARGETS[$i]}  (known)"; fi
+    done
     echo "  Settings   : threads=$THREADS depth=$DEPTH exts=[$EXTENSIONS] no_ext=$NO_EXT auto=$AUTO insecure=$INSECURE rate_limit=$RATE_LIMIT"
     echo "  Port scan  : fast engine=$FAST_SCANNER (auto = rustscan if installed, else nmap)"
     echo "  nmap       : fast=[$NMAP_FAST_OPTS]  deep=[$NMAP_DEEP_OPTS] (on open ports)"
@@ -1027,7 +1077,7 @@ if [[ $WORKER_MODE -eq 1 ]]; then
     if [[ -n "${TMUX:-}" ]]; then
         echo -e "${C_CYAN}${C_BOLD}[tmux]${C_RESET} Switch tabs: Ctrl+b n/p or Ctrl+b <number>  |  Detach: Ctrl+b d  |  Pause tier: ENTER"
     fi
-    run_target "$WORKER_TARGET" "$WORKER_DIR"
+    run_target "$WORKER_TARGET" "$WORKER_DIR" "$WORKER_MODE_KIND"
     # Rebuild the shared index.md (OUTDIR is the parent of this worker's dir).
     build_index "$(dirname "$WORKER_DIR")"
     echo -e "${C_GREEN}Press Enter to close this tab...${C_RESET}"; read -r
@@ -1057,7 +1107,7 @@ export_settings() {
 # break the command nor inject shell (the same approach ferox_run uses).
 worker_cmd() {
     local c
-    printf -v c '%q ' bash "$SCRIPT_PATH" --worker "$1" "$2"
+    printf -v c '%q ' bash "$SCRIPT_PATH" --worker "$1" "$2" "${3:-known}"
     printf '%s' "$c"
 }
 
@@ -1072,7 +1122,7 @@ fi
 #  Single target: run right here (no tmux needed)
 # ============================================================================
 if [[ ${#TARGETS[@]} -eq 1 ]]; then
-    run_target "${TARGETS[0]}" "$OUTDIR/$(safe_name "${TARGETS[0]}")"
+    run_target "${TARGETS[0]}" "$OUTDIR/$(safe_name "${TARGETS[0]}")" "${MODES[0]}"
     build_index "$OUTDIR"
     exit 0
 fi
@@ -1090,7 +1140,7 @@ launch_tmux() {
 
     local first_name; first_name="$(safe_name "${TARGETS[0]}")"
     local first_dir; first_dir="$OUTDIR/$(safe_name "${TARGETS[0]}")"
-    local first_cmd; first_cmd="$(worker_cmd "${TARGETS[0]}" "$first_dir")"
+    local first_cmd; first_cmd="$(worker_cmd "${TARGETS[0]}" "$first_dir" "${MODES[0]}")"
     tmux new-session -d -s "$S" -n "$first_name" "$first_cmd"
 
     tmux set-option -t "$S" base-index 1 \; set-window-option -t "$S" pane-base-index 1 \
@@ -1099,7 +1149,7 @@ launch_tmux() {
     local i T name tdir wcmd
     for (( i=1; i<${#TARGETS[@]}; i++ )); do
         T="${TARGETS[$i]}"; name="$(safe_name "$T")"; tdir="$OUTDIR/$(safe_name "$T")"
-        wcmd="$(worker_cmd "$T" "$tdir")"
+        wcmd="$(worker_cmd "$T" "$tdir" "${MODES[$i]}")"
         tmux new-window -t "$S" -n "$name" "$wcmd"
     done
     tmux move-window -r -t "$S"
@@ -1135,14 +1185,14 @@ launch_gui() {
     export_settings
     warn_msg "USE_GUI_TERM=1: opening one GUI terminal WINDOW per target (opt-in)."
     warn_msg "This does NOT give a single tabbed window. Unset USE_GUI_TERM for tmux."
-    local term="" T name tdir cmd
+    local term="" i T name tdir cmd
     for term in x-terminal-emulator gnome-terminal xfce4-terminal konsole xterm; do
         command -v "$term" >/dev/null 2>&1 && break || term=""
     done
     [[ -z "$term" ]] && { err_msg "No supported GUI terminal found. Unset USE_GUI_TERM to use tmux."; return 1; }
-    for T in "${TARGETS[@]}"; do
-        name="$(safe_name "$T")"; tdir="$OUTDIR/$name"
-        cmd="$(worker_cmd "$T" "$tdir"); exec bash"
+    for i in "${!TARGETS[@]}"; do
+        T="${TARGETS[$i]}"; name="$(safe_name "$T")"; tdir="$OUTDIR/$name"
+        cmd="$(worker_cmd "$T" "$tdir" "${MODES[$i]}"); exec bash"
         case "$term" in
             gnome-terminal|xfce4-terminal) "$term" --title="$T" -- bash -c "$cmd" & ;;
             konsole)                        "$term" -p tabtitle="$T" -e bash -c "$cmd" & ;;
@@ -1157,8 +1207,10 @@ launch_gui() {
 launch_sequential() {
     warn_msg "Running ${#TARGETS[@]} targets SEQUENTIALLY in this terminal."
     warn_msg "For one window with a tab per target: sudo apt install tmux"
-    local T
-    for T in "${TARGETS[@]}"; do run_target "$T" "$OUTDIR/$(safe_name "$T")"; done
+    local i T
+    for i in "${!TARGETS[@]}"; do
+        T="${TARGETS[$i]}"; run_target "$T" "$OUTDIR/$(safe_name "$T")" "${MODES[$i]}"
+    done
     build_index "$OUTDIR"
 }
 

@@ -28,7 +28,7 @@
 ## Features
 
 - **Flexible targets** — bare IP, `host:port`, or full URL. Bare values are normalized to `http://` automatically.
-- **Per-target service & port selection** — in interactive mode you pick `http`/`https` and the port for each target, so `feroxbuster` hits exactly the URL you intend.
+- **Scan-first or known-service flow** — give a bare host and Cataract scans it first, then enumerates whatever actually serves http/https (even on odd ports). Already know the URL/port? Supply it and enumeration starts immediately while the port scan runs in the background.
 - **Parallel port scan** — a full 65535-port `nmap -p- -sV -sC -Pn` scan runs in the background while the web brute-force proceeds; results are waited on and reported at the end.
 - **Escalating tier cascade** with a *continue?* prompt after each tier:
   | Tier | Wordlist | Source |
@@ -118,15 +118,18 @@ chmod +x cataract.sh
 ./cataract.sh
 ```
 
-Prompts for an output directory, then targets (one per line, blank line to finish). **For each bare target it asks which service (`http`/`https`) and which port to use**, then shows a summary and asks you to confirm before running:
+Prompts for an output directory, then targets (one per line, blank line to finish). For each **bare host** it asks whether you already know the web service(s)/port(s):
 
 ```
-Target: 10.10.10.5
-    Service for '10.10.10.5' [http/https] (default http): https
-    Port for '10.10.10.5' (default 443): 8443
+Target (host/IP or URL, blank to finish): 10.10.10.5
+  Do you already know the web service(s)/port(s) for '10.10.10.5'? [y/N] n
+  [+] will scan '10.10.10.5' first, then enumerate discovered web services.
 ```
 
-(Type a full URL like `https://10.10.10.5:8443` and it's used verbatim, no prompts.)
+- **No** → Cataract scans the host first and enumerates whatever serves http/https (any port).
+- **Yes** → you enter the service (`http`/`https`) and port — one or more — and those are enumerated immediately while the port scan runs in the background.
+
+A **full URL** (`https://10.10.10.5:8443`) or **host:port** (`10.10.10.5:8080`) is taken as a known service, no questions asked.
 
 ### Non-interactive / scripting
 
