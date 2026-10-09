@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [7.2.0] - 2026-10-09
 
 ### Added
+- **Two-phase nmap** — a fast all-ports sweep (`NMAP_FAST_OPTS`) finds every open port, then
+  a deep `-sV -sC` scan (`NMAP_DEEP_OPTS`) runs on just those ports. Both outputs are kept
+  (`<host>_fast.txt` and `<host>_deep.txt`). This runs **before** web enumeration, so the open
+  ports and the web services nmap found (even on non-standard ports) are shown first and
+  enumerated — not just the port you guessed.
 - **Multiple custom wordlists** — `-w` is now repeatable and the lists run in the order
   given, replacing the tier cascade. Interactive mode prompts for the paths too. Every path
   is validated **before any scanning starts** (fail-fast, listing any that are missing).
@@ -22,8 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `all_unique_results.txt`, `summary.md`, and a refreshed `index.md`.
 
 ### Changed
+- **Web-enumeration result files are named after the wordlist** (e.g. `common.log` /
+  `common.json`, `raft-medium-directories.json`) instead of `tierN` / `customN`.
+- nmap runs up front (two-phase) rather than in the background during the first cascade, so
+  web enumeration can target the ports that actually serve http/https.
 - Result de-duplication parses JSON tolerantly (`jq -R 'fromjson?'`), so a truncated file
   left by a cut-short scan still yields every complete hit.
+- `NMAP_OPTS` is replaced by `NMAP_FAST_OPTS` + `NMAP_DEEP_OPTS`.
 
 ## [7.1.0] - 2026-10-02
 

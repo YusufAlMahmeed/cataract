@@ -171,7 +171,9 @@ Interactive mode asks for these paths too (one per line, blank to finish).
 
 Each tunable can be overridden by a CLI flag (`-t`, `-d`, `-x`, …). The `TIER*_CANDIDATES` arrays just below let you add or reorder wordlist paths.
 
-> **nmap & root:** run Cataract (or at least nmap) as **root** for a fast SYN scan — the default `NMAP_OPTS` then adds `--min-rate 1000`. **Without root**, nmap falls back to a slower TCP connect scan (`-sT`) and Cataract warns you at startup. Setting your own `NMAP_OPTS` overrides this entirely, e.g. `NMAP_OPTS="-p- -sV" ./cataract.sh …`.
+> **Two-phase nmap.** Each host is scanned in two steps, **before** web enumeration: a **fast all-ports sweep** (`NMAP_FAST_OPTS`, default `-p- -T4 --min-rate 1000 -Pn -n`) finds every open port, then a **deep service/script scan** (`NMAP_DEEP_OPTS`, default `-sV -sC -Pn`) runs on just those ports. This is much quicker than `-sV -sC` across all 65535 ports, and it means Cataract knows which ports actually serve http/https — even on non-standard ports — and enumerates those, instead of only the port you guessed. Both phases are saved (`_fast.txt` / `_deep.txt`) and both are overridable via the env vars.
+>
+> **Root:** run as **root** for a fast SYN sweep. Without root, nmap uses a slower TCP connect scan (`-sT`) and Cataract warns you at startup.
 
 ---
 
@@ -213,17 +215,18 @@ This opens **one window per target** (not tabs) using whichever emulator is inst
 ```
 <output_dir>/
 ├── index.md                       # links to every target's summary
-├── _nmap/                         # one full-port scan per unique host (shared)
-│   ├── 10.10.10.5.txt             # human-readable nmap -oN output
-│   └── 10.10.10.5.log             # raw nmap stdout/stderr
+├── _nmap/                         # two-phase nmap per unique host (shared)
+│   ├── 10.10.10.5_fast.txt        # phase 1: fast all-ports sweep
+│   ├── 10.10.10.5_fast.log
+│   ├── 10.10.10.5_deep.txt        # phase 2: -sV -sC on the open ports
+│   └── 10.10.10.5_deep.log
 └── <target-safe-name>/            # e.g. 192.168.51.77_8443
-    ├── tier1.log  tier1.json      # per-tier feroxbuster: colorized log + JSON
-    ├── tier2.log  tier2.json
-    ├── tier3.log  tier3.json
-    ├── tier4.log  tier4.json
+    ├── common.log  common.json    # result files are named after the wordlist
+    ├── big.log  big.json
+    ├── raft-medium-directories.log  raft-medium-directories.json
     ├── results.txt                # de-duplicated hits for this service
-    ├── port_8080/                 # extra web port found by nmap (its own cascade)
-    │   ├── tier1.log  tier1.json
+    ├── port_8080/                 # extra web port nmap found (its own cascade)
+    │   ├── common.log  common.json
     │   └── results.txt
     ├── all_unique_results.txt     # combined, de-duplicated hits across all ports
     └── summary.md                 # open ports + notable findings, ready to paste into notes

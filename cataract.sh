@@ -56,17 +56,14 @@ set -uo pipefail
 : "${THREADS:=50}"                                   # feroxbuster threads
 : "${DEPTH:=2}"                                        # recursion depth (raise with -d)
 : "${EXTENSIONS:=php,html,txt,js,json,bak,zip}"        # appended to each word
-# NMAP_OPTS default is root-aware: as root nmap can do a fast SYN scan, so we
-# add --min-rate 1000; as non-root nmap falls back to a slower connect scan
-# (warned about at startup). An explicit NMAP_OPTS from the environment is
-# always respected as-is (so this stays overridable).
-if [[ -z "${NMAP_OPTS:-}" ]]; then
-    if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
-        NMAP_OPTS="-p- -sV -sC -Pn --min-rate 1000"
-    else
-        NMAP_OPTS="-p- -sV -sC -Pn"
-    fi
-fi
+# Two-phase nmap. A FAST sweep finds every open port, then a DEEP service/script
+# scan runs on just those ports -- far quicker than -p- -sV -sC on all 65535,
+# and it means we know which ports actually serve http/https (possibly on
+# non-standard ports) BEFORE web enumeration starts. Both are env-overridable.
+# --min-rate speeds the fast sweep (as root it is a SYN scan; as non-root a
+# slower connect scan, warned about at startup).
+: "${NMAP_FAST_OPTS:=-p- -T4 --min-rate 1000 -Pn -n}"  # phase 1: all-ports sweep
+: "${NMAP_DEEP_OPTS:=-sV -sC -Pn}"                     # phase 2: on open ports
 : "${RATE_LIMIT:=0}"                                   # ferox req/sec (0 = off)
 : "${INSECURE:=0}"                                     # 1 = always add ferox -k
 : "${AUTO:=0}"                                         # 1 = no tier prompts
@@ -381,8 +378,8 @@ check_tools() {
     command -v jq >/dev/null 2>&1 || \
         warn_msg "jq not found -- results will be parsed from logs instead of JSON. sudo apt install jq"
     if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
-        warn_msg "Not running as root: nmap will use a slower TCP connect scan (-sT) and"
-        warn_msg "    skips the --min-rate speed-up. Run with sudo for a faster SYN scan."
+        warn_msg "Not running as root: nmap's fast sweep uses a slower TCP connect scan (-sT)."
+        warn_msg "    Run with sudo for a faster SYN scan."
     fi
 }
 
@@ -549,6 +546,23 @@ ferox_run() {
     done_msg "[$url] $label done. Log: $log"
 }
 
+# wl_stem: filesystem-safe basename of a wordlist, without its extension, used
+# to name that pass's result files (so output is named after the wordlist).
+#   /usr/share/wordlists/dirb/common.txt  ->  common
+wl_stem() {
+    local b; b="$(basename "$1")"; b="${b%.*}"
+    printf '%s' "$b" | sed 's/[^A-Za-z0-9._-]/_/g'
+}
+
+# run_pass: one feroxbuster pass whose log/json are named after the wordlist.
+# Guards against two lists sharing a basename in the same dir by appending _N.
+run_pass() {
+    local url="$1" dir="$2" wordlist="$3" label="$4" no_ext="${5:-0}" stem base n
+    stem="$(wl_stem "$wordlist")"; base="$stem"; n=2
+    while [[ -e "$dir/$stem.json" || -e "$dir/$stem.log" ]]; do stem="${base}_$n"; ((n++)); done
+    ferox_run "$url" "$dir/$stem.log" "$dir/$stem.json" "$wordlist" "$label" "$no_ext"
+}
+
 # dedup_dir: build <dir>/results.txt from that dir's JSON (preferred) or, if
 # jq/JSON is unavailable, from the ANSI-stripped tier logs.
 dedup_dir() {
@@ -589,6 +603,7 @@ run_cascade() {
     mkdir -p "$dir"
 
     # Custom wordlists replace the tier cascade and run in insertion order.
+    # Each pass's files are named after the wordlist (run_pass / wl_stem).
     if [[ ${#CUSTOM_WORDLISTS[@]} -gt 0 ]]; then
         local i wl count=${#CUSTOM_WORDLISTS[@]}
         # On discovered extra ports (max_tier < 4) run only the first list to
@@ -598,35 +613,32 @@ run_cascade() {
             wl="${CUSTOM_WORDLISTS[$i]}"
             # Prompt between lists (not before the first); --auto skips prompts.
             if [[ $i -gt 0 ]] && ! prompt_continue "custom wordlist $((i+1)) ($(basename "$wl"))"; then break; fi
-            ferox_run "$url" "$dir/custom$((i+1)).log" "$dir/custom$((i+1)).json" \
-                "$wl" "CUSTOM $((i+1)) ($(basename "$wl"))"
+            run_pass "$url" "$dir" "$wl" "CUSTOM $((i+1)) ($(basename "$wl"))"
         done
         dedup_dir "$dir"; return
     fi
 
-    ferox_run "$url" "$dir/tier1.log" "$dir/tier1.json" "$TIER1_WORDLIST" "TIER 1 (dirb common)"
+    run_pass "$url" "$dir" "$TIER1_WORDLIST" "TIER 1 (dirb common)"
 
     if [[ $max_tier -ge 2 ]] && prompt_continue "TIER 2 (dirb big.txt)"; then
-        ferox_run "$url" "$dir/tier2.log" "$dir/tier2.json" "$TIER2_WORDLIST" "TIER 2 (dirb big)"
+        run_pass "$url" "$dir" "$TIER2_WORDLIST" "TIER 2 (dirb big)"
 
         if [[ $max_tier -ge 3 ]] && prompt_continue "TIER 3 (SecLists raft-medium)"; then
             if [[ -z "$TIER3_WORDLIST" ]]; then
                 err_msg "Tier 3 wordlist missing -- skipping. (sudo apt install seclists)"
             else
-                ferox_run "$url" "$dir/tier3.log" "$dir/tier3.json" "$TIER3_WORDLIST" "TIER 3 (raft-medium dirs)"
+                run_pass "$url" "$dir" "$TIER3_WORDLIST" "TIER 3 (raft-medium dirs)"
                 # Optional filename pass (no extensions) using the raft files list.
                 [[ -n "$TIER3_FILES_WORDLIST" ]] && \
-                    ferox_run "$url" "$dir/tier3_files.log" "$dir/tier3_files.json" \
-                        "$TIER3_FILES_WORDLIST" "TIER 3 files (raft-medium, no ext)" 1
+                    run_pass "$url" "$dir" "$TIER3_FILES_WORDLIST" "TIER 3 files (raft-medium, no ext)" 1
 
                 if [[ $max_tier -ge 4 ]] && prompt_continue "TIER 4 (SecLists raft-large)"; then
                     if [[ -z "$TIER4_WORDLIST" ]]; then
                         err_msg "Tier 4 wordlist missing -- skipping. (sudo apt install seclists)"
                     else
-                        ferox_run "$url" "$dir/tier4.log" "$dir/tier4.json" "$TIER4_WORDLIST" "TIER 4 (raft-large dirs)"
+                        run_pass "$url" "$dir" "$TIER4_WORDLIST" "TIER 4 (raft-large dirs)"
                         [[ -n "$TIER4_FILES_WORDLIST" ]] && \
-                            ferox_run "$url" "$dir/tier4_files.log" "$dir/tier4_files.json" \
-                                "$TIER4_FILES_WORDLIST" "TIER 4 files (raft-large, no ext)" 1
+                            run_pass "$url" "$dir" "$TIER4_FILES_WORDLIST" "TIER 4 files (raft-large, no ext)" 1
                     fi
                 fi
             fi
@@ -683,39 +695,51 @@ write_summary() {
     done_msg "[$target] Summary: $s"
 }
 
-# host_nmap_path: deterministic shared nmap output path for a host, so every
-# target/worker for that host reads the same file.
+# host_nmap_path: deterministic shared nmap output path for a host and phase
+# ("fast" or "deep"), so every target/worker for that host reads the same files.
 host_nmap_path() {
-    local host="$1" nmap_dir="$2" hsafe
+    local host="$1" nmap_dir="$2" phase="${3:-deep}" hsafe
     hsafe="$(printf '%s' "$host" | sed 's/[^A-Za-z0-9._-]/_/g')"
-    printf '%s/%s.txt' "$nmap_dir" "$hsafe"
+    printf '%s/%s_%s.txt' "$nmap_dir" "$hsafe" "$phase"
 }
 
-# ensure_host_nmap: run ONE full-port nmap per unique host, shared across all
-# targets/workers for that host. A flock on <host>.lock serializes it: the
-# first caller runs the scan while any concurrent tmux workers block on the
-# lock, then see the <host>.done marker and reuse the result instead of
-# launching a second -p- scan. (If flock is unavailable, falls back to a
-# best-effort .done check.)
+# nmap_open_ports: comma-separated list of open TCP ports from an nmap -oN file.
+nmap_open_ports() {
+    grep -E '^[0-9]+/tcp[[:space:]]+open' "$1" 2>/dev/null | cut -d/ -f1 | paste -sd, -
+}
+
+# ensure_host_nmap: run the two-phase nmap ONCE per unique host, shared across
+# all targets/workers for that host. Phase 1 is a fast all-ports sweep; phase 2
+# is a deep -sV -sC scan limited to the ports phase 1 found. Results are TWO
+# files: <host>_fast.txt and <host>_deep.txt. A flock on <host>.lock serializes
+# it so concurrent tmux workers don't duplicate the scan (they block, then reuse
+# via the <host>.done marker). Falls back to a best-effort .done check without flock.
 ensure_host_nmap() {
     local host="$1" nmap_dir="$2" hsafe
     hsafe="$(printf '%s' "$host" | sed 's/[^A-Za-z0-9._-]/_/g')"
-    local txt="$nmap_dir/$hsafe.txt" log="$nmap_dir/$hsafe.log"
+    local fast_txt="$nmap_dir/${hsafe}_fast.txt" fast_log="$nmap_dir/${hsafe}_fast.log"
+    local deep_txt="$nmap_dir/${hsafe}_deep.txt" deep_log="$nmap_dir/${hsafe}_deep.log"
     local lock="$nmap_dir/$hsafe.lock" marker="$nmap_dir/$hsafe.done"
     mkdir -p "$nmap_dir"
-    if command -v flock >/dev/null 2>&1; then
-        (
-            flock 9
-            if [[ ! -f "$marker" ]]; then
-                # shellcheck disable=SC2086  # NMAP_OPTS is intentionally word-split
-                nmap $NMAP_OPTS "$host" -oN "$txt" > "$log" 2>&1
-                touch "$marker"
-            fi
-        ) 9>"$lock"
-    elif [[ ! -f "$marker" ]]; then
-        # shellcheck disable=SC2086  # NMAP_OPTS is intentionally word-split
-        nmap $NMAP_OPTS "$host" -oN "$txt" > "$log" 2>&1
+    _run_two_phase() {
+        [[ -f "$marker" ]] && return 0
+        # Phase 1: fast all-ports sweep.
+        # shellcheck disable=SC2086  # NMAP_FAST_OPTS is intentionally word-split
+        nmap $NMAP_FAST_OPTS "$host" -oN "$fast_txt" > "$fast_log" 2>&1
+        local ports; ports="$(nmap_open_ports "$fast_txt")"
+        # Phase 2: deep scan on just the open ports (or note if none).
+        if [[ -n "$ports" ]]; then
+            # shellcheck disable=SC2086  # NMAP_DEEP_OPTS is intentionally word-split
+            nmap $NMAP_DEEP_OPTS -p "$ports" "$host" -oN "$deep_txt" > "$deep_log" 2>&1
+        else
+            printf '# No open TCP ports found by the fast scan.\n' > "$deep_txt"
+        fi
         touch "$marker"
+    }
+    if command -v flock >/dev/null 2>&1; then
+        ( flock 9; _run_two_phase ) 9>"$lock"
+    else
+        _run_two_phase
     fi
 }
 
@@ -745,30 +769,37 @@ run_target() {
     banner "[$TARGET] Starting enumeration. Output: $TDIR"
     banner "[$TARGET] Press ENTER during a feroxbuster tier to pause/cancel it."
 
-    # Background: full-port service/script scan, shared per host (scan-once).
-    # The shared dir lives alongside the per-target dirs, so tmux workers for
-    # the same host share one scan via the flock inside ensure_host_nmap.
+    # nmap FIRST (two-phase, shared per host). We wait for it before web
+    # enumeration so we know which ports actually serve http/https -- they may
+    # be on non-standard ports -- and can target them instead of guessing.
     local NMAP_DIR; NMAP_DIR="$(dirname "$TDIR")/_nmap"; mkdir -p "$NMAP_DIR"
-    local FULLSCAN_OUT; FULLSCAN_OUT="$(host_nmap_path "$HOST" "$NMAP_DIR")"
+    local FAST_OUT; FAST_OUT="$(host_nmap_path "$HOST" "$NMAP_DIR" fast)"
+    local FULLSCAN_OUT; FULLSCAN_OUT="$(host_nmap_path "$HOST" "$NMAP_DIR" deep)"
     CURRENT_NMAP_TXT="$FULLSCAN_OUT"
-    banner "[$TARGET] Full-port nmap for $HOST (shared, scan-once) -> $FULLSCAN_OUT"
-    ensure_host_nmap "$HOST" "$NMAP_DIR" &
-    local FULLSCAN_PID=$!; BG_PIDS+=("$FULLSCAN_PID")
+    banner "[$TARGET] nmap phase 1/2 for $HOST: fast port sweep, then deep scan on open ports..."
+    ensure_host_nmap "$HOST" "$NMAP_DIR"
+    done_msg "[$TARGET] nmap done. fast: $FAST_OUT | deep: $FULLSCAN_OUT"
 
-    # Foreground: tier cascade against the chosen service/port.
-    run_cascade "$TARGET" "$TDIR" 4
-
-    if kill -0 "$FULLSCAN_PID" 2>/dev/null; then
-        banner "[$TARGET] Waiting for the full-port scan to finish..."; wait "$FULLSCAN_PID"
-    fi
-    done_msg "[$TARGET] Full-port scan complete: $FULLSCAN_OUT"
-
-    # Discover extra web ports from nmap and (auto or on prompt) enumerate them.
+    # Show open ports and the web services nmap identified, BEFORE enumerating.
+    local openports; openports="$(nmap_open_ports "$FAST_OUT")"
+    [[ -n "$openports" ]] && banner "[$TARGET] Open ports: $openports" \
+        || warn_msg "[$TARGET] No open ports reported by the fast scan."
     local extra=() e p
     mapfile -t extra < <(discover_web_ports "$FULLSCAN_OUT" "$HOST" "$PPORT")
     if [[ ${#extra[@]} -gt 0 ]]; then
-        banner "[$TARGET] Extra web services found by nmap:"
+        banner "[$TARGET] Web services nmap found (besides the chosen $TARGET):"
         for e in "${extra[@]}"; do echo "      - $e"; done
+    fi
+    # Note if the user's chosen port wasn't seen open (we still enumerate it).
+    if [[ -n "$openports" && ",$openports," != *",$PPORT,"* ]]; then
+        warn_msg "[$TARGET] Chosen port $PPORT not reported open by nmap -- enumerating it anyway."
+    fi
+
+    # Primary tier cascade against the chosen service/port.
+    run_cascade "$TARGET" "$TDIR" 4
+
+    # Then enumerate the extra web services nmap found (auto or on prompt).
+    if [[ ${#extra[@]} -gt 0 ]]; then
         for e in "${extra[@]}"; do
             if prompt_continue "enumerate discovered service $e"; then
                 p="$(port_of "$e")"
@@ -820,6 +851,7 @@ do_dry_run() {
     echo "  Targets (${#TARGETS[@]}):"
     local t; for t in "${TARGETS[@]}"; do echo "      - $t"; done
     echo "  Settings   : threads=$THREADS depth=$DEPTH exts=[$EXTENSIONS] no_ext=$NO_EXT auto=$AUTO insecure=$INSECURE rate_limit=$RATE_LIMIT"
+    echo "  nmap       : fast=[$NMAP_FAST_OPTS]  deep=[$NMAP_DEEP_OPTS] (on open ports)"
     if [[ ${#HEADERS[@]} -gt 0 ]]; then
         echo "  Headers    :"; local h; for h in "${HEADERS[@]}"; do echo "      -H $h"; done
     fi
@@ -866,8 +898,8 @@ SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 
 # Propagate flag-set settings into worker tabs (they are separate bash procs).
 export_settings() {
-    export THREADS DEPTH EXTENSIONS NMAP_OPTS RATE_LIMIT INSECURE AUTO \
-           NO_EXT USE_GUI_TERM EXTRA_PORT_MAX_TIER
+    export THREADS DEPTH EXTENSIONS NMAP_FAST_OPTS NMAP_DEEP_OPTS RATE_LIMIT \
+           INSECURE AUTO NO_EXT USE_GUI_TERM EXTRA_PORT_MAX_TIER
     # Declare then assign separately (SC2155): keep printf's exit status visible.
     local hdrs=""
     [[ ${#HEADERS[@]} -gt 0 ]] && hdrs="$(printf '%s\n' "${HEADERS[@]}")"
