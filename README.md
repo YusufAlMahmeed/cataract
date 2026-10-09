@@ -60,15 +60,55 @@
 | `rustscan` | recommended | fast phase-1 port discovery (falls back to nmap if absent) |
 | `jq` | recommended | JSON-based de-duplication of results (falls back to log parsing if absent) |
 | `dirb` wordlists | yes | Tiers 1–2 (`common.txt`, `big.txt`) |
-| `seclists` | optional | Tiers 3–4 (`raft-medium-files.txt`, `raft-large-files.txt`) |
+| `seclists` | optional | Tiers 3–4 (`raft-*-directories.txt` + `raft-*-files.txt`) |
 
 ### One-line install (Debian/Kali/Ubuntu)
+
+Everything except RustScan is in the standard repos:
 
 ```bash
 sudo apt update && sudo apt install -y nmap feroxbuster tmux jq dirb seclists bsdutils util-linux
 ```
 
 > SecLists installs under different paths/casings across distros (`/usr/share/seclists`, `/usr/share/SecLists`, `/opt/SecLists`, …). The script searches all the common locations automatically, so Tiers 3–4 usually "just work" once `seclists` is installed.
+
+### Installing RustScan (optional, recommended)
+
+RustScan isn't in the default repos, but it makes phase-1 port discovery dramatically faster. Cataract works without it (it falls back to nmap), so this is optional. Pick **one** method:
+
+**A. Prebuilt `.deb` (easiest on Kali/Debian/Ubuntu)** — grab the latest `.deb` from the [RustScan releases page](https://github.com/RustScan/RustScan/releases) and install it:
+
+```bash
+# replace the version/filename with the latest from the releases page
+curl -LO https://github.com/RustScan/RustScan/releases/download/2.3.0/rustscan_2.3.0_amd64.deb
+sudo dpkg -i rustscan_2.3.0_amd64.deb
+```
+
+**B. With Cargo (Rust's package manager)** — works on any distro:
+
+```bash
+sudo apt install -y cargo        # if you don't already have Rust/Cargo
+cargo install rustscan
+# cargo installs to ~/.cargo/bin — make sure it's on your PATH:
+export PATH="$HOME/.cargo/bin:$PATH"   # add to ~/.bashrc or ~/.zshrc to persist
+```
+
+**C. Docker (no local install)** — note Cataract runs the `rustscan` *command*, so for it to be auto-detected you'd wrap the container in a script named `rustscan` on your `PATH`; otherwise prefer A or B for integration:
+
+```bash
+docker pull rustscan/rustscan:latest
+# optional wrapper so Cataract can call it:
+printf '#!/bin/sh\nexec docker run --rm --network host rustscan/rustscan:latest "$@"\n' | sudo tee /usr/local/bin/rustscan >/dev/null
+sudo chmod +x /usr/local/bin/rustscan
+```
+
+Verify it's visible to Cataract:
+
+```bash
+rustscan --version    # should print a version; Cataract then auto-uses it
+```
+
+> Force the engine if you want: `FAST_SCANNER=rustscan` (error out of the nmap fallback) or `FAST_SCANNER=nmap` (ignore RustScan). Tune RustScan with `RUSTSCAN_OPTS` (default `--ulimit 5000 --tries 2`).
 
 ### Get it
 
