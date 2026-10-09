@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Pluggable fast engine** — `FAST_SCANNER=auto` (default) uses **RustScan** for phase 1 when
   it's installed (sweeps all 65535 ports in seconds) and falls back to nmap (`NMAP_FAST_OPTS`)
   otherwise; force with `rustscan` / `nmap`. Fast *and* accurate: both engines cover all ports,
-  RustScan uses `--tries 2`, and phase 2 always re-scans with `nmap -sV -sC` for accurate
+  RustScan sweeps all ports with a raised `--ulimit`, and phase 2 always re-scans with `nmap -sV -sC` for accurate
   service identification regardless of which engine found the port.
 - **Multiple custom wordlists** — `-w` is now repeatable and the lists run in the order
   given, replacing the tier cascade. Interactive mode prompts for the paths too. Every path
@@ -49,6 +49,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   previous run's output (which could make a freshly installed RustScan appear unused).
 - Scan banner is engine-accurate (no longer always says "nmap"), the tool now says when it
   reuses a scan, and RustScan falls back to the nmap sweep if it returns no ports or errors.
+- RustScan now actually finds ports: dropped the `--tries` default flag (unsupported on some
+  RustScan versions, which made the call error out and fall back to nmap), and the port parser
+  handles both RustScan output formats (greppable `[22,80]` and plain `Open ip:port`).
 
 ## [7.1.0] - 2026-10-02
 

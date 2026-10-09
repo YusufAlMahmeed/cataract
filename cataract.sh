@@ -70,13 +70,14 @@ set -uo pipefail
 # Fast AND accurate, by design:
 #   - Both engines sweep ALL 65535 ports (rustscan is fast via async concurrency,
 #     not by scanning fewer ports), so coverage is complete either way.
-#   - rustscan runs with --tries 2 so a single dropped probe doesn't lose a port.
+#   - rustscan runs with a raised --ulimit so its batch size is honoured (it
+#     warns and slows down otherwise) -- reliable, fast full-port sweeps.
 #   - nmap's fast default keeps a modest --min-rate 1000 (raising it trades
 #     accuracy for speed) and -T4's retries.
 #   - Phase 2 re-scans the discovered ports with full nmap -sV -sC, so service
 #     identification is nmap-accurate no matter which engine found the port.
 : "${FAST_SCANNER:=auto}"                              # auto | rustscan | nmap
-: "${RUSTSCAN_OPTS:=--ulimit 5000 --tries 2}"          # speed + a retry for accuracy
+: "${RUSTSCAN_OPTS:=--ulimit 5000}"                    # raised fd limit for reliable sweeps
 : "${NMAP_FAST_OPTS:=-p- -T4 --min-rate 1000 -Pn -n}"  # phase 1 when using nmap
 : "${NMAP_DEEP_OPTS:=-sV -sC -Pn}"                     # phase 2: on open ports
 : "${NMAP_STATS_INTERVAL:=15s}"                        # nmap progress print cadence
@@ -736,10 +737,18 @@ nmap_open_ports() {
     grep -E '^[0-9]+/tcp[[:space:]]+open' "$1" 2>/dev/null | cut -d/ -f1 | paste -sd, -
 }
 
-# rustscan_open_ports: comma-separated ports from rustscan greppable output,
-# whose line looks like:  1.2.3.4 -> [22,80,443]
+# rustscan_open_ports: comma-separated open ports from rustscan output, robust
+# to both formats rustscan emits across versions/flags:
+#   - greppable (-g):  "1.2.3.4 -> [22,80,443]"
+#   - default lines:   "Open 1.2.3.4:22"
 rustscan_open_ports() {
-    grep -oE '\[[0-9,]+\]' "$1" 2>/dev/null | head -1 | tr -d '[]'
+    local p
+    p="$(grep -oE '\[[0-9,]+\]' "$1" 2>/dev/null | head -1 | tr -d '[]')"
+    if [[ -z "$p" ]]; then
+        p="$(grep -oiE 'open[[:space:]]+[0-9.]+:[0-9]+' "$1" 2>/dev/null \
+             | grep -oE '[0-9]+$' | sort -n -u | paste -sd, -)"
+    fi
+    printf '%s' "$p"
 }
 
 # pick_fast_scanner: resolve FAST_SCANNER (auto -> rustscan if available else nmap).
