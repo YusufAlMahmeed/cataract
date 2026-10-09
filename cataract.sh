@@ -76,6 +76,11 @@ set -uo pipefail
 : "${NMAP_FAST_OPTS:=-p- -T4 --min-rate 1000 -Pn -n}"  # phase 1 when using nmap
 : "${NMAP_DEEP_OPTS:=-sV -sC -Pn}"                     # phase 2: on open ports
 : "${NMAP_STATS_INTERVAL:=15s}"                        # nmap progress print cadence
+# Optional UDP scan (off by default). UDP is slow/unreliable, so this is a
+# TOP-ports scan (not -p-) that runs in the BACKGROUND during web enumeration
+# and is waited for at the end. Needs root for a real -sU scan.
+: "${UDP_SCAN:=0}"                                     # 1 = also scan top UDP ports
+: "${UDP_NMAP_OPTS:=-sU --top-ports 100 -sV -Pn}"      # UDP scan options
 # Groups one invocation's shared scans. Workers inherit it (exported), so the
 # "scan each host once" guard dedupes WITHIN a run but a NEW run always rescans
 # (e.g. after you install rustscan) instead of reusing a previous run's output.
@@ -167,7 +172,7 @@ TIER1_WORDLIST=""; TIER2_WORDLIST=""; TIER3_WORDLIST=""; TIER4_WORDLIST=""
 TIER3_FILES_WORDLIST=""; TIER4_FILES_WORDLIST=""
 BG_PIDS=()   # background nmap PIDs, so the trap can reap them
 # Set by run_target so an interrupt can save the in-progress target's results.
-CURRENT_TARGET=""; CURRENT_TDIR=""; CURRENT_NMAP_TXT=""; CURRENT_OUTDIR=""
+CURRENT_TARGET=""; CURRENT_TDIR=""; CURRENT_NMAP_TXT=""; CURRENT_UDP_TXT=""; CURRENT_OUTDIR=""
 SALVAGING=0
 
 # ---- Clean shutdown: never orphan a background nmap scan --------------------
@@ -192,7 +197,7 @@ on_interrupt() {
     warn_msg "Interrupted -- saving results collected so far..."
     cleanup
     if [[ -n "$CURRENT_TDIR" && -d "$CURRENT_TDIR" ]]; then
-        finalize_target "$CURRENT_TARGET" "$CURRENT_TDIR" "$CURRENT_NMAP_TXT" 2>/dev/null
+        finalize_target "$CURRENT_TARGET" "$CURRENT_TDIR" "$CURRENT_NMAP_TXT" "$CURRENT_UDP_TXT" 2>/dev/null
         done_msg "Saved partial results: $CURRENT_TDIR/all_unique_results.txt"
     fi
     [[ -n "$CURRENT_OUTDIR" ]] && build_index "$CURRENT_OUTDIR" 2>/dev/null
@@ -221,6 +226,8 @@ OPTIONS:
                   pass -w multiple times to run several lists in the given order.
                   Each path is checked to exist before scanning starts.
   --no-ext        Do not append extensions on any pass (filenames-only).
+  --udp           Also scan the top 100 UDP ports (nmap -sU) in the background;
+                  needs root. Off by default (UDP is slow).
   --dry-run       Print the resolved targets, wordlists, settings and per-list
                   request estimates, then exit without scanning.
   -k, --insecure  Disable TLS cert validation (feroxbuster -k). Auto-enabled
@@ -406,6 +413,7 @@ check_tools() {
     if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
         warn_msg "Not running as root: nmap's fast sweep uses a slower TCP connect scan (-sT)."
         warn_msg "    Run with sudo for a faster SYN scan."
+        [[ "$UDP_SCAN" == "1" ]] && warn_msg "    --udp also needs root (-sU); UDP results will be unreliable without it."
     fi
 }
 
@@ -471,6 +479,7 @@ else
             -x) EXTENSIONS="${2:-}"; shift 2 ;;
             -w) CUSTOM_WORDLISTS+=("${2:-}"); shift 2 ;;
             --no-ext) NO_EXT=1; shift ;;
+            --udp) UDP_SCAN=1; shift ;;
             --dry-run) DRY_RUN=1; shift ;;
             -k|--insecure) INSECURE=1; shift ;;
             -a|--auto) AUTO=1; shift ;;
@@ -694,17 +703,27 @@ discover_web_ports() {
 
 # write_summary: a readable per-target summary.md (open ports + notable hits).
 write_summary() {
-    local target="$1" tdir="$2" nmap_txt="$3" s="$2/summary.md"
+    local target="$1" tdir="$2" nmap_txt="$3" udp_txt="${4:-}" s="$2/summary.md"
     {
         echo "# Cataract summary -- $target"
         echo
         echo "_Generated: $(date)_"
         echo
-        echo "## Open ports (nmap)"
+        echo "## Open ports (TCP, nmap)"
         echo '```'
         grep -E '^[0-9]+/tcp[[:space:]]+open' "$nmap_txt" 2>/dev/null || echo "(no nmap results)"
         echo '```'
         echo
+        if [[ -n "$udp_txt" && -f "$udp_txt" ]]; then
+            echo "## Open ports (UDP, nmap --top-ports; open|filtered omitted)"
+            echo '```'
+            # Match definitively "open" UDP ports; "open|filtered" won't match
+            # because the char after "open" is '|', not space/EOL.
+            grep -E '^[0-9]+/udp[[:space:]]+open([[:space:]]|$)' "$udp_txt" 2>/dev/null \
+                || echo "(no definitively-open UDP ports in the top 100)"
+            echo '```'
+            echo
+        fi
         echo "## Content discovery"
         local combined="$tdir/all_unique_results.txt"
         if [[ -s "$combined" ]]; then
@@ -820,16 +839,38 @@ ensure_host_nmap() {
     fi
 }
 
+# ensure_host_udp: optional top-ports UDP scan, shared per host and run-scoped
+# like the TCP scan. Output goes to <host>_udp.txt. Runs quietly (log only, no
+# live tee) because it is launched in the background during web enumeration.
+ensure_host_udp() {
+    local host="$1" nmap_dir="$2" hsafe
+    hsafe="$(printf '%s' "$host" | sed 's/[^A-Za-z0-9._-]/_/g')"
+    local udp_txt="$nmap_dir/${hsafe}_udp.txt" udp_log="$nmap_dir/${hsafe}_udp.log"
+    local lock="$nmap_dir/$hsafe.udp.lock" marker="$nmap_dir/$hsafe.udp.${CATARACT_RUN_ID}.done"
+    mkdir -p "$nmap_dir"
+    _run_udp() {
+        [[ -f "$marker" ]] && return 0
+        # shellcheck disable=SC2086  # UDP_NMAP_OPTS is intentionally word-split
+        nmap $UDP_NMAP_OPTS "$host" -oN "$udp_txt" > "$udp_log" 2>&1
+        touch "$marker"
+    }
+    if command -v flock >/dev/null 2>&1; then
+        ( flock 9; _run_udp ) 9>"$lock"
+    else
+        _run_udp
+    fi
+}
+
 # finalize_target: de-duplicate every result dir for a target (primary + any
 # port_* subdirs), aggregate into all_unique_results.txt, and write summary.md.
 # Safe to call mid-scan from the interrupt handler -- dedup_dir tolerates the
 # partial JSON/logs left behind when a scan is cut short.
 finalize_target() {
-    local target="$1" tdir="$2" nmap_txt="$3" p
+    local target="$1" tdir="$2" nmap_txt="$3" udp_txt="${4:-}" p
     dedup_dir "$tdir"
     for p in "$tdir"/port_*/; do [[ -d "$p" ]] && dedup_dir "$p"; done
     cat "$tdir/results.txt" "$tdir"/port_*/results.txt 2>/dev/null | sort -u > "$tdir/all_unique_results.txt"
-    write_summary "$target" "$tdir" "$nmap_txt"
+    write_summary "$target" "$tdir" "$nmap_txt" "$udp_txt"
 }
 
 # ============================================================================
@@ -856,6 +897,16 @@ run_target() {
     banner "[$TARGET] Port scan for $HOST (phase 1: fast discovery, phase 2: deep service scan)..."
     ensure_host_nmap "$HOST" "$NMAP_DIR"
     done_msg "[$TARGET] Port scan complete. fast: $FAST_OUT | deep: $FULLSCAN_OUT"
+
+    # Optional UDP scan: start in the BACKGROUND (it's slow) during web enum,
+    # then wait for it at the end. Shared per host, like the TCP scan.
+    local UDP_PID=""
+    if [[ "$UDP_SCAN" == "1" ]]; then
+        CURRENT_UDP_TXT="$(host_nmap_path "$HOST" "$NMAP_DIR" udp)"
+        banner "[$TARGET] UDP scan (top 100 ports) running in background -> $CURRENT_UDP_TXT"
+        ensure_host_udp "$HOST" "$NMAP_DIR" &
+        UDP_PID=$!; BG_PIDS+=("$UDP_PID")
+    fi
 
     # Show open ports and the web services nmap identified, BEFORE enumerating.
     # Read them from the DEEP file: it is always nmap -oN format (the fast file
@@ -887,8 +938,16 @@ run_target() {
         done
     fi
 
+    # Wait out the background UDP scan (if any) so its results are in the summary.
+    if [[ -n "$UDP_PID" ]]; then
+        if kill -0 "$UDP_PID" 2>/dev/null; then
+            banner "[$TARGET] Waiting for the background UDP scan to finish..."; wait "$UDP_PID"
+        fi
+        done_msg "[$TARGET] UDP scan complete: $CURRENT_UDP_TXT"
+    fi
+
     # Aggregate + summarize (the same routine the interrupt handler uses).
-    finalize_target "$TARGET" "$TDIR" "$FULLSCAN_OUT"
+    finalize_target "$TARGET" "$TDIR" "$FULLSCAN_OUT" "$CURRENT_UDP_TXT"
     done_msg "[$TARGET] Combined results: $TDIR/all_unique_results.txt"
     done_msg "[$TARGET] ALL DONE. Everything is in $TDIR"
 }
@@ -932,6 +991,7 @@ do_dry_run() {
     echo "  Settings   : threads=$THREADS depth=$DEPTH exts=[$EXTENSIONS] no_ext=$NO_EXT auto=$AUTO insecure=$INSECURE rate_limit=$RATE_LIMIT"
     echo "  Port scan  : fast engine=$FAST_SCANNER (auto = rustscan if installed, else nmap)"
     echo "  nmap       : fast=[$NMAP_FAST_OPTS]  deep=[$NMAP_DEEP_OPTS] (on open ports)"
+    echo "  UDP scan   : $([[ "$UDP_SCAN" == "1" ]] && echo "on [$UDP_NMAP_OPTS]" || echo "off (--udp to enable)")"
     if [[ ${#HEADERS[@]} -gt 0 ]]; then
         echo "  Headers    :"; local h; for h in "${HEADERS[@]}"; do echo "      -H $h"; done
     fi
@@ -980,6 +1040,7 @@ SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 export_settings() {
     export THREADS DEPTH EXTENSIONS FAST_SCANNER RUSTSCAN_OPTS \
            NMAP_FAST_OPTS NMAP_DEEP_OPTS NMAP_STATS_INTERVAL CATARACT_RUN_ID \
+           UDP_SCAN UDP_NMAP_OPTS \
            RATE_LIMIT INSECURE AUTO NO_EXT USE_GUI_TERM EXTRA_PORT_MAX_TIER
     # Declare then assign separately (SC2155): keep printf's exit status visible.
     local hdrs=""

@@ -24,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   given, replacing the tier cascade. Interactive mode prompts for the paths too. Every path
   is validated **before any scanning starts** (fail-fast, listing any that are missing).
 - **`--no-ext`** — don't append `--extensions` on any pass (filenames-only).
+- **`--udp` / `UDP_SCAN=1`** — optional top-100 UDP scan (`nmap -sU --top-ports 100 -sV`), off by
+  default. It runs in the background during web enumeration (UDP is slow), is shared per host,
+  needs root, and its open ports are added to `summary.md` and saved to `_nmap/<host>_udp.txt`.
 - **`--dry-run`** — print the resolved targets, settings, planned wordlists and each list's
   base request estimate, then exit without scanning. Skips the scanning-tool check but still
   validates wordlists, so the preview is honest and catches typos early.

@@ -150,6 +150,7 @@ Target: 10.10.10.5
 | `-x <exts>` | comma-separated extensions |
 | `-w <wordlist>` | custom wordlist instead of the tier cascade; **repeatable** — runs in the order given (paths checked up front) |
 | `--no-ext` | don't append extensions on any pass (filenames-only) |
+| `--udp` | also scan the top 100 UDP ports (`nmap -sU`) in the background; needs root, off by default |
 | `--dry-run` | print targets, wordlists, settings and request estimates, then exit without scanning |
 | `-k`, `--insecure` | disable TLS validation (auto-enabled for `https://`) |
 | `-a`, `--auto` | non-interactive: run all tiers, auto-enumerate discovered ports |
@@ -250,7 +251,8 @@ This opens **one window per target** (not tabs) using whichever emulator is inst
 │   ├── 10.10.10.5_fast.txt        # phase 1: fast all-ports sweep
 │   ├── 10.10.10.5_fast.log
 │   ├── 10.10.10.5_deep.txt        # phase 2: -sV -sC on the open ports
-│   └── 10.10.10.5_deep.log
+│   ├── 10.10.10.5_deep.log
+│   └── 10.10.10.5_udp.txt         # only with --udp: top-100 UDP scan
 └── <target-safe-name>/            # e.g. 192.168.51.77_8443
     ├── common.log  common.json    # result files are named after the wordlist
     ├── big.log  big.json
