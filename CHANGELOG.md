@@ -52,6 +52,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - RustScan now actually finds ports: dropped the `--tries` default flag (unsupported on some
   RustScan versions, which made the call error out and fall back to nmap), and the port parser
   handles both RustScan output formats (greppable `[22,80]` and plain `Open ip:port`).
+- The "Open ports" line (and the stray "no open ports" warning) now reads the deep nmap file,
+  which is always nmap format, instead of mis-parsing RustScan's fast-file format.
 
 ## [7.1.0] - 2026-10-02
 

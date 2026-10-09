@@ -861,9 +861,11 @@ run_target() {
     done_msg "[$TARGET] Port scan complete. fast: $FAST_OUT | deep: $FULLSCAN_OUT"
 
     # Show open ports and the web services nmap identified, BEFORE enumerating.
-    local openports; openports="$(nmap_open_ports "$FAST_OUT")"
+    # Read them from the DEEP file: it is always nmap -oN format (the fast file
+    # may be rustscan's own format), and it is the authoritative open-port set.
+    local openports; openports="$(nmap_open_ports "$FULLSCAN_OUT")"
     [[ -n "$openports" ]] && banner "[$TARGET] Open ports: $openports" \
-        || warn_msg "[$TARGET] No open ports reported by the fast scan."
+        || warn_msg "[$TARGET] No open ports found."
     local extra=() e p
     mapfile -t extra < <(discover_web_ports "$FULLSCAN_OUT" "$HOST" "$PPORT")
     if [[ ${#extra[@]} -gt 0 ]]; then
