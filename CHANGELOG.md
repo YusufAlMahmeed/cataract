@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > Versions before **7.0.0** were private development iterations and are not published here.
 
+## [7.2.0] - 2026-10-09
+
+### Added
+- **Multiple custom wordlists** — `-w` is now repeatable and the lists run in the order
+  given, replacing the tier cascade. Interactive mode prompts for the paths too. Every path
+  is validated **before any scanning starts** (fail-fast, listing any that are missing).
+- **`--no-ext`** — don't append `--extensions` on any pass (filenames-only).
+- **`--dry-run`** — print the resolved targets, settings, planned wordlists and each list's
+  base request estimate, then exit without scanning. Skips the scanning-tool check but still
+  validates wordlists, so the preview is honest and catches typos early.
+- **Save-on-stop** — stopping the tool (Ctrl+C, closing a tab, or `tmux kill-session`) now
+  saves whatever the in-progress target has found so far: a de-duplicated `results.txt`,
+  `all_unique_results.txt`, `summary.md`, and a refreshed `index.md`.
+
+### Changed
+- Result de-duplication parses JSON tolerantly (`jq -R 'fromjson?'`), so a truncated file
+  left by a cut-short scan still yields every complete hit.
+
 ## [7.1.0] - 2026-10-02
 
 ### Changed
@@ -65,5 +83,6 @@ First public release.
 - `-k` auto-enabled for `https://` targets; clean Ctrl+C handling that kills background scans;
   upfront tool/wordlist checks with install hints; graceful fallbacks when tmux/jq are absent.
 
+[7.2.0]: https://github.com/YusufAlMahmeed/cataract/releases/tag/v7.2.0
 [7.1.0]: https://github.com/YusufAlMahmeed/cataract/releases/tag/v7.1.0
 [7.0.0]: https://github.com/YusufAlMahmeed/cataract/releases/tag/v7.0.0
