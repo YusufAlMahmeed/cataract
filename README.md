@@ -57,7 +57,7 @@
 | `feroxbuster` | yes | recursive content discovery |
 | `script` (util-linux) | yes | preserves colorized output while logging |
 | `tmux` | recommended | one window with a tab per target (falls back to sequential if absent) |
-| `rustscan` | recommended | fast phase-1 port discovery (falls back to nmap if absent) |
+| `rustscan` | optional | *faster* phase-1 port discovery on low-latency targets (nmap is the accurate default engine) |
 | `jq` | recommended | JSON-based de-duplication of results (falls back to log parsing if absent) |
 | `dirb` wordlists | yes | Tiers 1–2 (`common.txt`, `big.txt`) |
 | `seclists` | optional | Tiers 3–4 (`raft-*-directories.txt` + `raft-*-files.txt`) |
@@ -74,7 +74,7 @@ sudo apt update && sudo apt install -y nmap feroxbuster tmux jq dirb seclists bs
 
 ### Installing RustScan (optional, recommended)
 
-RustScan makes phase-1 port discovery dramatically faster. Cataract works without it (it falls back to nmap), so it's optional.
+RustScan makes phase-1 port discovery dramatically faster on low-latency targets. It's **optional and off by default** — Cataract uses nmap for accuracy unless you opt in with `FAST_SCANNER=rustscan` (or `FAST_SCANNER=auto`). On slow/remote hosts RustScan can miss ports, so prefer it for lab/internal networks.
 
 **On Kali it's in the repos** — just:
 
@@ -94,7 +94,7 @@ Verify it's visible to Cataract (then it's auto-used):
 rustscan --version
 ```
 
-> Force the engine if you want: `FAST_SCANNER=rustscan` or `FAST_SCANNER=nmap`. Tune RustScan with `RUSTSCAN_OPTS` (default `--ulimit 5000`).
+Then enable it per run with `FAST_SCANNER=rustscan ./cataract.sh …` (or `FAST_SCANNER=auto`). Tune it with `RUSTSCAN_OPTS` (default `--ulimit 5000`; add a smaller `-b` / larger `-t` if it under-reports on a slower target).
 
 ### Get it
 
@@ -200,9 +200,7 @@ Each tunable can be overridden by a CLI flag (`-t`, `-d`, `-x`, …). The `TIER*
 
 > **Two-phase scan.** Each host is scanned in two steps, **before** web enumeration: a **fast all-ports sweep** finds every open port, then a **deep service/script scan** (`NMAP_DEEP_OPTS`, default `-sV -sC -Pn`) runs on just those ports. This is much quicker than `-sV -sC` across all 65535 ports, and it means Cataract knows which ports actually serve http/https — even on non-standard ports — and enumerates those, instead of only the port you guessed. Both phases are saved (`_fast.txt` / `_deep.txt`).
 >
-> **Fast *and* accurate.** Both phase-1 engines sweep **all 65535 ports** (RustScan is fast via async concurrency, not by scanning fewer ports), so coverage is complete either way; RustScan sweeps with a raised `--ulimit` so no probes are dropped; and **phase 2 always re-scans the found ports with `nmap -sV -sC`**, so service/version detection is nmap-accurate no matter which engine discovered the port.
->
-> **Install [RustScan](https://github.com/RustScan/RustScan) for a big speed-up.** `FAST_SCANNER=auto` (default) uses **RustScan** for phase 1 when it's installed (it sweeps all ports in seconds), and falls back to **nmap** (`NMAP_FAST_OPTS`, default `-p- -T4 --min-rate 1000 -Pn -n`) otherwise. Force either with `FAST_SCANNER=rustscan` / `FAST_SCANNER=nmap`. Tune RustScan via `RUSTSCAN_OPTS` (default `--ulimit 5000`). Raising nmap's `--min-rate` speeds the fallback but trades accuracy for speed (packet loss can miss ports), so only push it on reliable lab networks.
+> **Engine (`FAST_SCANNER`), accuracy-first default.** Phase 1 defaults to **nmap** (`FAST_SCANNER=nmap`, opts `NMAP_FAST_OPTS`, default `-p- -T4 --min-rate 1000 -Pn -n`) because nmap's `-p-` sweep reliably finds every open port on **any** target. **[RustScan](https://github.com/RustScan/RustScan)** (`FAST_SCANNER=rustscan`, or `auto` = rustscan-if-installed) is *much* faster, but as an aggressive async scanner it can **miss ports on high-latency or rate-limited links** (RustScan itself warns about this) — so use it on **low-latency lab/internal networks**, where it's both fast and accurate. Whichever finds the ports, **phase 2 always re-scans them with `nmap -sV -sC`**, so service/version detection is nmap-accurate. Tune RustScan via `RUSTSCAN_OPTS` (default `--ulimit 5000`; on a slow target RustScan suggests a smaller `-b` batch and a larger `-t` timeout). Raising nmap's `--min-rate` speeds nmap but can miss ports on lossy links, so only push it on reliable networks.
 >
 > Scan output is streamed **live** to the screen (and logged); nmap uses `--stats-every` (default `15s`, set `NMAP_STATS_INTERVAL`) so a long sweep visibly reports `% done` and ETC rather than sitting silently.
 >

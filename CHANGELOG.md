@@ -15,11 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `<host>_deep.txt`). This runs **before** web enumeration, so the open ports and the web
   services found (even on non-standard ports) are shown first and enumerated — not just the
   port you guessed.
-- **Pluggable fast engine** — `FAST_SCANNER=auto` (default) uses **RustScan** for phase 1 when
-  it's installed (sweeps all 65535 ports in seconds) and falls back to nmap (`NMAP_FAST_OPTS`)
-  otherwise; force with `rustscan` / `nmap`. Fast *and* accurate: both engines cover all ports,
-  RustScan sweeps all ports with a raised `--ulimit`, and phase 2 always re-scans with `nmap -sV -sC` for accurate
-  service identification regardless of which engine found the port.
+- **Pluggable fast engine** (`FAST_SCANNER`) — phase 1 defaults to **nmap** for accuracy;
+  **RustScan** (`FAST_SCANNER=rustscan`, or `auto` = rustscan-if-installed) is much faster but
+  can under-report ports on high-latency/rate-limited links, so it's best on low-latency
+  lab/internal networks. Whichever engine finds the ports, **phase 2 always re-scans them with
+  `nmap -sV -sC`**, so service identification is nmap-accurate regardless.
 - **Multiple custom wordlists** — `-w` is now repeatable and the lists run in the order
   given, replacing the tier cascade. Interactive mode prompts for the paths too. Every path
   is validated **before any scanning starts** (fail-fast, listing any that are missing).

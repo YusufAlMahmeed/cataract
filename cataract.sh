@@ -62,21 +62,16 @@ set -uo pipefail
 # non-standard ports) BEFORE web enumeration starts. Both are env-overridable.
 # --min-rate speeds the fast sweep (as root it is a SYN scan; as non-root a
 # slower connect scan, warned about at startup).
-# Phase-1 port discovery engine: "auto" uses rustscan when it is installed
-# (much faster at sweeping all 65535 ports) and falls back to nmap otherwise;
-# force with "rustscan" or "nmap". Phase 2 (service/script detection) is always
-# nmap, for accurate http/https labelling.
-#
-# Fast AND accurate, by design:
-#   - Both engines sweep ALL 65535 ports (rustscan is fast via async concurrency,
-#     not by scanning fewer ports), so coverage is complete either way.
-#   - rustscan runs with a raised --ulimit so its batch size is honoured (it
-#     warns and slows down otherwise) -- reliable, fast full-port sweeps.
-#   - nmap's fast default keeps a modest --min-rate 1000 (raising it trades
-#     accuracy for speed) and -T4's retries.
-#   - Phase 2 re-scans the discovered ports with full nmap -sV -sC, so service
-#     identification is nmap-accurate no matter which engine found the port.
-: "${FAST_SCANNER:=auto}"                              # auto | rustscan | nmap
+# Phase-1 port discovery engine. Default is "nmap" for accuracy: nmap's -p-
+# sweep reliably finds every open port on any target. "rustscan" is much faster
+# but, being an aggressive async scanner, can MISS ports on high-latency or
+# rate-limited links (it even warns about this) -- so it's best on low-latency
+# lab/internal networks, where it's both fast and accurate. "auto" uses rustscan
+# when installed, else nmap. Phase 2 (service/script detection) is always nmap.
+#   nmap     -> accurate everywhere (default)
+#   rustscan -> fast; great on labs, can under-report on slow/remote targets
+#   auto     -> rustscan if installed, else nmap
+: "${FAST_SCANNER:=nmap}"                              # nmap | rustscan | auto
 : "${RUSTSCAN_OPTS:=--ulimit 5000}"                    # raised fd limit for reliable sweeps
 : "${NMAP_FAST_OPTS:=-p- -T4 --min-rate 1000 -Pn -n}"  # phase 1 when using nmap
 : "${NMAP_DEEP_OPTS:=-sV -sC -Pn}"                     # phase 2: on open ports
@@ -398,12 +393,14 @@ check_tools() {
     }
     command -v jq >/dev/null 2>&1 || \
         warn_msg "jq not found -- results will be parsed from logs instead of JSON. sudo apt install jq"
-    if [[ "$FAST_SCANNER" != "nmap" ]]; then
+    if [[ "$FAST_SCANNER" == "nmap" ]]; then
+        command -v rustscan >/dev/null 2>&1 && \
+            banner "Port discovery: nmap (accurate default). rustscan is installed -- 'FAST_SCANNER=rustscan' for much faster sweeps on low-latency/lab targets."
+    else
         if command -v rustscan >/dev/null 2>&1; then
-            done_msg "rustscan detected -- using it for fast port discovery (nmap for the deep scan)."
+            done_msg "Port discovery: rustscan (fast). Deep scan: nmap. Best on low-latency/lab targets; may under-report on slow/remote hosts."
         else
-            warn_msg "rustscan not found -- using nmap for the (slower) port sweep. For a big speed-up:"
-            warn_msg "    install rustscan (cargo install rustscan) or set FAST_SCANNER=nmap to silence this."
+            warn_msg "FAST_SCANNER=$FAST_SCANNER but rustscan not found -- using nmap instead. (install: sudo apt install rustscan)"
         fi
     fi
     if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
