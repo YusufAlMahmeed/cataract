@@ -13,11 +13,15 @@
 
 ---
 
-## Screenshots
+## Demo
 
-| Interactive run — pick service &amp; port per target | Live scan across tmux tabs |
-| :--: | :--: |
-| ![Interactive mode: service/port prompts and the wordlist check](screenshots/interactive.png) | ![tmux tab bar with feroxbuster running per target](screenshots/tmux-tabs.png) |
+<p align="center">
+  <img src="demo.gif" alt="Cataract demo — sudo ./cataract.sh -o /tmp/cataract/demo -a scanme.nmap.org" width="100%">
+</p>
+
+<!-- Drop your recording at repo root as demo.gif (e.g. a capture of:
+     sudo ./cataract.sh -o /tmp/cataract/demo -a scanme.nmap.org). -->
+
 
 ---
 
