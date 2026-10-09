@@ -10,11 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [7.2.0] - 2026-10-09
 
 ### Added
-- **Two-phase nmap** — a fast all-ports sweep (`NMAP_FAST_OPTS`) finds every open port, then
-  a deep `-sV -sC` scan (`NMAP_DEEP_OPTS`) runs on just those ports. Both outputs are kept
-  (`<host>_fast.txt` and `<host>_deep.txt`). This runs **before** web enumeration, so the open
-  ports and the web services nmap found (even on non-standard ports) are shown first and
-  enumerated — not just the port you guessed.
+- **Two-phase scan** — a fast all-ports sweep finds every open port, then a deep `nmap -sV -sC`
+  scan (`NMAP_DEEP_OPTS`) runs on just those ports. Both outputs are kept (`<host>_fast.txt`
+  and `<host>_deep.txt`). This runs **before** web enumeration, so the open ports and the web
+  services found (even on non-standard ports) are shown first and enumerated — not just the
+  port you guessed.
+- **Pluggable fast engine** — `FAST_SCANNER=auto` (default) uses **RustScan** for phase 1 when
+  it's installed (sweeps all 65535 ports in seconds) and falls back to nmap (`NMAP_FAST_OPTS`)
+  otherwise; force with `rustscan` / `nmap`. Fast *and* accurate: both engines cover all ports,
+  RustScan uses `--tries 2`, and phase 2 always re-scans with `nmap -sV -sC` for accurate
+  service identification regardless of which engine found the port.
 - **Multiple custom wordlists** — `-w` is now repeatable and the lists run in the order
   given, replacing the tier cascade. Interactive mode prompts for the paths too. Every path
   is validated **before any scanning starts** (fail-fast, listing any that are missing).

@@ -57,6 +57,7 @@
 | `feroxbuster` | yes | recursive content discovery |
 | `script` (util-linux) | yes | preserves colorized output while logging |
 | `tmux` | recommended | one window with a tab per target (falls back to sequential if absent) |
+| `rustscan` | recommended | fast phase-1 port discovery (falls back to nmap if absent) |
 | `jq` | recommended | JSON-based de-duplication of results (falls back to log parsing if absent) |
 | `dirb` wordlists | yes | Tiers 1–2 (`common.txt`, `big.txt`) |
 | `seclists` | optional | Tiers 3–4 (`raft-medium-files.txt`, `raft-large-files.txt`) |
@@ -171,9 +172,13 @@ Interactive mode asks for these paths too (one per line, blank to finish).
 
 Each tunable can be overridden by a CLI flag (`-t`, `-d`, `-x`, …). The `TIER*_CANDIDATES` arrays just below let you add or reorder wordlist paths.
 
-> **Two-phase nmap.** Each host is scanned in two steps, **before** web enumeration: a **fast all-ports sweep** (`NMAP_FAST_OPTS`, default `-p- -T4 --min-rate 1000 -Pn -n`) finds every open port, then a **deep service/script scan** (`NMAP_DEEP_OPTS`, default `-sV -sC -Pn`) runs on just those ports. This is much quicker than `-sV -sC` across all 65535 ports, and it means Cataract knows which ports actually serve http/https — even on non-standard ports — and enumerates those, instead of only the port you guessed. Both phases are saved (`_fast.txt` / `_deep.txt`) and both are overridable via the env vars.
+> **Two-phase scan.** Each host is scanned in two steps, **before** web enumeration: a **fast all-ports sweep** finds every open port, then a **deep service/script scan** (`NMAP_DEEP_OPTS`, default `-sV -sC -Pn`) runs on just those ports. This is much quicker than `-sV -sC` across all 65535 ports, and it means Cataract knows which ports actually serve http/https — even on non-standard ports — and enumerates those, instead of only the port you guessed. Both phases are saved (`_fast.txt` / `_deep.txt`).
 >
-> nmap's output is streamed **live** to the screen (and logged) with `--stats-every` (default `15s`, set `NMAP_STATS_INTERVAL`), so a long sweep visibly reports `% done` and ETC rather than sitting silently.
+> **Fast *and* accurate.** Both phase-1 engines sweep **all 65535 ports** (RustScan is fast via async concurrency, not by scanning fewer ports), so coverage is complete either way; RustScan runs with `--tries 2` so a dropped probe doesn't lose a port; and **phase 2 always re-scans the found ports with `nmap -sV -sC`**, so service/version detection is nmap-accurate no matter which engine discovered the port.
+>
+> **Install [RustScan](https://github.com/RustScan/RustScan) for a big speed-up.** `FAST_SCANNER=auto` (default) uses **RustScan** for phase 1 when it's installed (it sweeps all ports in seconds), and falls back to **nmap** (`NMAP_FAST_OPTS`, default `-p- -T4 --min-rate 1000 -Pn -n`) otherwise. Force either with `FAST_SCANNER=rustscan` / `FAST_SCANNER=nmap`. Tune RustScan via `RUSTSCAN_OPTS` (default `--ulimit 5000 --tries 2`). Raising nmap's `--min-rate` speeds the fallback but trades accuracy for speed (packet loss can miss ports), so only push it on reliable lab networks.
+>
+> Scan output is streamed **live** to the screen (and logged); nmap uses `--stats-every` (default `15s`, set `NMAP_STATS_INTERVAL`) so a long sweep visibly reports `% done` and ETC rather than sitting silently.
 >
 > **Root:** run as **root** for a fast SYN sweep. Without root, nmap uses a slower TCP connect scan (`-sT`) and Cataract warns you at startup.
 

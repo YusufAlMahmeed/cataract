@@ -62,7 +62,22 @@ set -uo pipefail
 # non-standard ports) BEFORE web enumeration starts. Both are env-overridable.
 # --min-rate speeds the fast sweep (as root it is a SYN scan; as non-root a
 # slower connect scan, warned about at startup).
-: "${NMAP_FAST_OPTS:=-p- -T4 --min-rate 1000 -Pn -n}"  # phase 1: all-ports sweep
+# Phase-1 port discovery engine: "auto" uses rustscan when it is installed
+# (much faster at sweeping all 65535 ports) and falls back to nmap otherwise;
+# force with "rustscan" or "nmap". Phase 2 (service/script detection) is always
+# nmap, for accurate http/https labelling.
+#
+# Fast AND accurate, by design:
+#   - Both engines sweep ALL 65535 ports (rustscan is fast via async concurrency,
+#     not by scanning fewer ports), so coverage is complete either way.
+#   - rustscan runs with --tries 2 so a single dropped probe doesn't lose a port.
+#   - nmap's fast default keeps a modest --min-rate 1000 (raising it trades
+#     accuracy for speed) and -T4's retries.
+#   - Phase 2 re-scans the discovered ports with full nmap -sV -sC, so service
+#     identification is nmap-accurate no matter which engine found the port.
+: "${FAST_SCANNER:=auto}"                              # auto | rustscan | nmap
+: "${RUSTSCAN_OPTS:=--ulimit 5000 --tries 2}"          # speed + a retry for accuracy
+: "${NMAP_FAST_OPTS:=-p- -T4 --min-rate 1000 -Pn -n}"  # phase 1 when using nmap
 : "${NMAP_DEEP_OPTS:=-sV -sC -Pn}"                     # phase 2: on open ports
 : "${NMAP_STATS_INTERVAL:=15s}"                        # nmap progress print cadence
 : "${RATE_LIMIT:=0}"                                   # ferox req/sec (0 = off)
@@ -378,6 +393,14 @@ check_tools() {
     }
     command -v jq >/dev/null 2>&1 || \
         warn_msg "jq not found -- results will be parsed from logs instead of JSON. sudo apt install jq"
+    if [[ "$FAST_SCANNER" != "nmap" ]]; then
+        if command -v rustscan >/dev/null 2>&1; then
+            done_msg "rustscan detected -- using it for fast port discovery (nmap for the deep scan)."
+        else
+            warn_msg "rustscan not found -- using nmap for the (slower) port sweep. For a big speed-up:"
+            warn_msg "    install rustscan (cargo install rustscan) or set FAST_SCANNER=nmap to silence this."
+        fi
+    fi
     if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
         warn_msg "Not running as root: nmap's fast sweep uses a slower TCP connect scan (-sT)."
         warn_msg "    Run with sudo for a faster SYN scan."
@@ -709,6 +732,24 @@ nmap_open_ports() {
     grep -E '^[0-9]+/tcp[[:space:]]+open' "$1" 2>/dev/null | cut -d/ -f1 | paste -sd, -
 }
 
+# rustscan_open_ports: comma-separated ports from rustscan greppable output,
+# whose line looks like:  1.2.3.4 -> [22,80,443]
+rustscan_open_ports() {
+    grep -oE '\[[0-9,]+\]' "$1" 2>/dev/null | head -1 | tr -d '[]'
+}
+
+# pick_fast_scanner: resolve FAST_SCANNER (auto -> rustscan if available else nmap).
+pick_fast_scanner() {
+    local e="$FAST_SCANNER"
+    if [[ "$e" == "auto" ]]; then
+        command -v rustscan >/dev/null 2>&1 && e="rustscan" || e="nmap"
+    elif [[ "$e" == "rustscan" ]] && ! command -v rustscan >/dev/null 2>&1; then
+        warn_msg "[scan] FAST_SCANNER=rustscan but rustscan not found -- using nmap. (install: cargo install rustscan, or https://github.com/RustScan/RustScan)"
+        e="nmap"
+    fi
+    printf '%s' "$e"
+}
+
 # ensure_host_nmap: run the two-phase nmap ONCE per unique host, shared across
 # all targets/workers for that host. Phase 1 is a fast all-ports sweep; phase 2
 # is a deep -sV -sC scan limited to the ports phase 1 found. Results are TWO
@@ -724,21 +765,29 @@ ensure_host_nmap() {
     mkdir -p "$nmap_dir"
     _run_two_phase() {
         [[ -f "$marker" ]] && return 0
-        # nmap output is shown LIVE (tee to screen + log) with --stats-every so
-        # a long -p- sweep prints periodic "X% done; ETC" progress -- you can
-        # always see it is working, not stuck.
-        # Phase 1: fast all-ports sweep.
-        banner "[nmap] Phase 1/2: fast all-ports sweep of $host (this can take a few minutes)..."
-        # shellcheck disable=SC2086  # NMAP_FAST_OPTS is intentionally word-split
-        nmap $NMAP_FAST_OPTS --stats-every "$NMAP_STATS_INTERVAL" "$host" -oN "$fast_txt" 2>&1 | tee "$fast_log"
-        local ports; ports="$(nmap_open_ports "$fast_txt")"
-        # Phase 2: deep scan on just the open ports (or note if none).
+        # Output is shown LIVE (tee to screen + log) so you can always see it is
+        # working, not stuck.
+        local ports engine; engine="$(pick_fast_scanner)"
+        # --- Phase 1: fast all-ports discovery ------------------------------
+        if [[ "$engine" == "rustscan" ]]; then
+            banner "[scan] Phase 1/2: rustscan fast port discovery on $host..."
+            # shellcheck disable=SC2086  # RUSTSCAN_OPTS is intentionally word-split
+            rustscan -a "$host" $RUSTSCAN_OPTS -g 2>&1 | tee "$fast_txt"
+            ports="$(rustscan_open_ports "$fast_txt")"
+        else
+            banner "[scan] Phase 1/2: nmap fast all-ports sweep of $host (this can take a few minutes)..."
+            # --stats-every makes nmap print periodic "% done / ETC" progress.
+            # shellcheck disable=SC2086  # NMAP_FAST_OPTS is intentionally word-split
+            nmap $NMAP_FAST_OPTS --stats-every "$NMAP_STATS_INTERVAL" "$host" -oN "$fast_txt" 2>&1 | tee "$fast_log"
+            ports="$(nmap_open_ports "$fast_txt")"
+        fi
+        # --- Phase 2: deep nmap service/script scan on the open ports -------
         if [[ -n "$ports" ]]; then
-            banner "[nmap] Phase 2/2: deep -sV -sC scan on open ports: $ports"
+            banner "[scan] Phase 2/2: nmap deep -sV -sC scan on open ports: $ports"
             # shellcheck disable=SC2086  # NMAP_DEEP_OPTS is intentionally word-split
             nmap $NMAP_DEEP_OPTS --stats-every "$NMAP_STATS_INTERVAL" -p "$ports" "$host" -oN "$deep_txt" 2>&1 | tee "$deep_log"
         else
-            warn_msg "[nmap] No open TCP ports found by the fast scan -- skipping deep scan."
+            warn_msg "[scan] No open TCP ports found by the fast scan -- skipping deep scan."
             printf '# No open TCP ports found by the fast scan.\n' > "$deep_txt"
         fi
         touch "$marker"
@@ -858,6 +907,7 @@ do_dry_run() {
     echo "  Targets (${#TARGETS[@]}):"
     local t; for t in "${TARGETS[@]}"; do echo "      - $t"; done
     echo "  Settings   : threads=$THREADS depth=$DEPTH exts=[$EXTENSIONS] no_ext=$NO_EXT auto=$AUTO insecure=$INSECURE rate_limit=$RATE_LIMIT"
+    echo "  Port scan  : fast engine=$FAST_SCANNER (auto = rustscan if installed, else nmap)"
     echo "  nmap       : fast=[$NMAP_FAST_OPTS]  deep=[$NMAP_DEEP_OPTS] (on open ports)"
     if [[ ${#HEADERS[@]} -gt 0 ]]; then
         echo "  Headers    :"; local h; for h in "${HEADERS[@]}"; do echo "      -H $h"; done
@@ -905,7 +955,8 @@ SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 
 # Propagate flag-set settings into worker tabs (they are separate bash procs).
 export_settings() {
-    export THREADS DEPTH EXTENSIONS NMAP_FAST_OPTS NMAP_DEEP_OPTS NMAP_STATS_INTERVAL \
+    export THREADS DEPTH EXTENSIONS FAST_SCANNER RUSTSCAN_OPTS \
+           NMAP_FAST_OPTS NMAP_DEEP_OPTS NMAP_STATS_INTERVAL \
            RATE_LIMIT INSECURE AUTO NO_EXT USE_GUI_TERM EXTRA_PORT_MAX_TIER
     # Declare then assign separately (SC2155): keep printf's exit status visible.
     local hdrs=""
