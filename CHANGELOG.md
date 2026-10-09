@@ -27,6 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `all_unique_results.txt`, `summary.md`, and a refreshed `index.md`.
 
 ### Changed
+- **nmap shows live progress** — its output is streamed to the screen (and logged) with
+  `--stats-every` (default 15s, `NMAP_STATS_INTERVAL`), plus clear phase banners, so a long
+  all-ports sweep visibly reports `% done` / ETC instead of sitting silently.
 - **Web-enumeration result files are named after the wordlist** (e.g. `common.log` /
   `common.json`, `raft-medium-directories.json`) instead of `tierN` / `customN`.
 - nmap runs up front (two-phase) rather than in the background during the first cascade, so

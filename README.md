@@ -173,6 +173,8 @@ Each tunable can be overridden by a CLI flag (`-t`, `-d`, `-x`, …). The `TIER*
 
 > **Two-phase nmap.** Each host is scanned in two steps, **before** web enumeration: a **fast all-ports sweep** (`NMAP_FAST_OPTS`, default `-p- -T4 --min-rate 1000 -Pn -n`) finds every open port, then a **deep service/script scan** (`NMAP_DEEP_OPTS`, default `-sV -sC -Pn`) runs on just those ports. This is much quicker than `-sV -sC` across all 65535 ports, and it means Cataract knows which ports actually serve http/https — even on non-standard ports — and enumerates those, instead of only the port you guessed. Both phases are saved (`_fast.txt` / `_deep.txt`) and both are overridable via the env vars.
 >
+> nmap's output is streamed **live** to the screen (and logged) with `--stats-every` (default `15s`, set `NMAP_STATS_INTERVAL`), so a long sweep visibly reports `% done` and ETC rather than sitting silently.
+>
 > **Root:** run as **root** for a fast SYN sweep. Without root, nmap uses a slower TCP connect scan (`-sT`) and Cataract warns you at startup.
 
 ---

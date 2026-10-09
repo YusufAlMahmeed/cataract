@@ -64,6 +64,7 @@ set -uo pipefail
 # slower connect scan, warned about at startup).
 : "${NMAP_FAST_OPTS:=-p- -T4 --min-rate 1000 -Pn -n}"  # phase 1: all-ports sweep
 : "${NMAP_DEEP_OPTS:=-sV -sC -Pn}"                     # phase 2: on open ports
+: "${NMAP_STATS_INTERVAL:=15s}"                        # nmap progress print cadence
 : "${RATE_LIMIT:=0}"                                   # ferox req/sec (0 = off)
 : "${INSECURE:=0}"                                     # 1 = always add ferox -k
 : "${AUTO:=0}"                                         # 1 = no tier prompts
@@ -723,15 +724,21 @@ ensure_host_nmap() {
     mkdir -p "$nmap_dir"
     _run_two_phase() {
         [[ -f "$marker" ]] && return 0
+        # nmap output is shown LIVE (tee to screen + log) with --stats-every so
+        # a long -p- sweep prints periodic "X% done; ETC" progress -- you can
+        # always see it is working, not stuck.
         # Phase 1: fast all-ports sweep.
+        banner "[nmap] Phase 1/2: fast all-ports sweep of $host (this can take a few minutes)..."
         # shellcheck disable=SC2086  # NMAP_FAST_OPTS is intentionally word-split
-        nmap $NMAP_FAST_OPTS "$host" -oN "$fast_txt" > "$fast_log" 2>&1
+        nmap $NMAP_FAST_OPTS --stats-every "$NMAP_STATS_INTERVAL" "$host" -oN "$fast_txt" 2>&1 | tee "$fast_log"
         local ports; ports="$(nmap_open_ports "$fast_txt")"
         # Phase 2: deep scan on just the open ports (or note if none).
         if [[ -n "$ports" ]]; then
+            banner "[nmap] Phase 2/2: deep -sV -sC scan on open ports: $ports"
             # shellcheck disable=SC2086  # NMAP_DEEP_OPTS is intentionally word-split
-            nmap $NMAP_DEEP_OPTS -p "$ports" "$host" -oN "$deep_txt" > "$deep_log" 2>&1
+            nmap $NMAP_DEEP_OPTS --stats-every "$NMAP_STATS_INTERVAL" -p "$ports" "$host" -oN "$deep_txt" 2>&1 | tee "$deep_log"
         else
+            warn_msg "[nmap] No open TCP ports found by the fast scan -- skipping deep scan."
             printf '# No open TCP ports found by the fast scan.\n' > "$deep_txt"
         fi
         touch "$marker"
@@ -898,8 +905,8 @@ SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 
 # Propagate flag-set settings into worker tabs (they are separate bash procs).
 export_settings() {
-    export THREADS DEPTH EXTENSIONS NMAP_FAST_OPTS NMAP_DEEP_OPTS RATE_LIMIT \
-           INSECURE AUTO NO_EXT USE_GUI_TERM EXTRA_PORT_MAX_TIER
+    export THREADS DEPTH EXTENSIONS NMAP_FAST_OPTS NMAP_DEEP_OPTS NMAP_STATS_INTERVAL \
+           RATE_LIMIT INSECURE AUTO NO_EXT USE_GUI_TERM EXTRA_PORT_MAX_TIER
     # Declare then assign separately (SC2155): keep printf's exit status visible.
     local hdrs=""
     [[ ${#HEADERS[@]} -gt 0 ]] && hdrs="$(printf '%s\n' "${HEADERS[@]}")"
