@@ -194,6 +194,8 @@ The tab bar shows a clear `CATARACT` label on the left, highlights the **active 
 
 > `Ctrl+b` is tmux's default prefix key. Press and release it, *then* press the next key.
 
+> **Stopping always saves your results.** However you stop — `Ctrl+C`, closing the terminal, or `tmux kill-session` — Cataract de-duplicates whatever each in-progress target has found so far and writes its `results.txt`, `all_unique_results.txt`, `summary.md` and the combined `index.md` before exiting. Partial JSON from a cut-short scan is parsed tolerantly, so nothing already discovered is lost.
+
 ### GUI-terminal opt-in (not recommended)
 
 tmux is the default because native GUI-terminal tabs proved unreliable across environments (Terminator doesn't support gnome-terminal's `--tab -e` chaining; `gnome-terminal`/`xfce4-terminal --tab` open separate windows when the terminal is already running). If you specifically want separate desktop windows anyway:

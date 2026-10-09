@@ -38,6 +38,8 @@
 #    - Switch tabs:  Ctrl+b n/p  or  Ctrl+b <number>   (mouse click works too)
 #    - Detach (keep running): Ctrl+b d   Reattach: tmux attach -t <session>
 #    - Stop everything: tmux kill-session -t <session>
+#    - Stopping (Ctrl+C / closing a tab / kill-session) still SAVES whatever
+#      the in-progress target has found so far (results + summary + index).
 #
 #  Authorized testing only. Run this only against systems you own or have
 #  explicit written permission to test.
@@ -151,6 +153,9 @@ WORKER_TARGET=""; WORKER_DIR=""; norm=""
 TIER1_WORDLIST=""; TIER2_WORDLIST=""; TIER3_WORDLIST=""; TIER4_WORDLIST=""
 TIER3_FILES_WORDLIST=""; TIER4_FILES_WORDLIST=""
 BG_PIDS=()   # background nmap PIDs, so the trap can reap them
+# Set by run_target so an interrupt can save the in-progress target's results.
+CURRENT_TARGET=""; CURRENT_TDIR=""; CURRENT_NMAP_TXT=""; CURRENT_OUTDIR=""
+SALVAGING=0
 
 # ---- Clean shutdown: never orphan a background nmap scan --------------------
 cleanup() {
@@ -159,8 +164,29 @@ cleanup() {
         kill "$p" 2>/dev/null
     done
 }
+
+# on_interrupt: on Ctrl+C / terminal close / tmux kill, SAVE whatever the
+# in-progress target has produced so far -- de-duplicate the partial JSON/logs,
+# write all_unique_results.txt + summary.md, and refresh index.md -- before
+# exiting. (finalize_target/build_index are defined later; a bash trap resolves
+# them at fire time, and the CURRENT_* guards keep it safe if a signal arrives
+# before any scanning has started.)
+on_interrupt() {
+    [[ "$SALVAGING" == "1" ]] && exit 130     # ignore repeat signals while saving
+    SALVAGING=1
+    trap - INT TERM HUP
+    echo
+    warn_msg "Interrupted -- saving results collected so far..."
+    cleanup
+    if [[ -n "$CURRENT_TDIR" && -d "$CURRENT_TDIR" ]]; then
+        finalize_target "$CURRENT_TARGET" "$CURRENT_TDIR" "$CURRENT_NMAP_TXT" 2>/dev/null
+        done_msg "Saved partial results: $CURRENT_TDIR/all_unique_results.txt"
+    fi
+    [[ -n "$CURRENT_OUTDIR" ]] && build_index "$CURRENT_OUTDIR" 2>/dev/null
+    exit 130
+}
 trap cleanup EXIT
-trap 'echo; err_msg "Interrupted -- stopping background scans."; cleanup; exit 130' INT TERM
+trap on_interrupt INT TERM HUP
 
 usage() {
     cat <<EOF
@@ -529,9 +555,11 @@ dedup_dir() {
     local dir="$1" out="$1/results.txt"
     : > "$out"
     if command -v jq >/dev/null 2>&1 && compgen -G "$dir/*.json" >/dev/null 2>&1; then
-        # Each JSON line is an event; keep response events as: status <TAB> len <TAB> url
+        # Each JSON line is an event; keep response events as: status <TAB> len <TAB> url.
+        # -R + fromjson? reads line-by-line and skips any malformed line, so a
+        # truncated final line from an interrupted scan still parses cleanly.
         cat "$dir"/*.json 2>/dev/null \
-            | jq -r 'select(.type=="response") | [.status, .content_length, .url] | @tsv' 2>/dev/null \
+            | jq -rR 'fromjson? | select(.type=="response") | [.status, .content_length, .url] | @tsv' 2>/dev/null \
             | sort -u > "$out"
     fi
     if [[ ! -s "$out" ]]; then
@@ -691,6 +719,18 @@ ensure_host_nmap() {
     fi
 }
 
+# finalize_target: de-duplicate every result dir for a target (primary + any
+# port_* subdirs), aggregate into all_unique_results.txt, and write summary.md.
+# Safe to call mid-scan from the interrupt handler -- dedup_dir tolerates the
+# partial JSON/logs left behind when a scan is cut short.
+finalize_target() {
+    local target="$1" tdir="$2" nmap_txt="$3" p
+    dedup_dir "$tdir"
+    for p in "$tdir"/port_*/; do [[ -d "$p" ]] && dedup_dir "$p"; done
+    cat "$tdir/results.txt" "$tdir"/port_*/results.txt 2>/dev/null | sort -u > "$tdir/all_unique_results.txt"
+    write_summary "$target" "$tdir" "$nmap_txt"
+}
+
 # ============================================================================
 #  Per-target orchestration
 # ============================================================================
@@ -699,6 +739,8 @@ run_target() {
     mkdir -p "$TDIR"
     local HOST; HOST="$(host_only "$TARGET")"
     local PPORT; PPORT="$(port_of "$TARGET")"
+    # Record for the interrupt handler so a stop still saves this target.
+    CURRENT_TARGET="$TARGET"; CURRENT_TDIR="$TDIR"; CURRENT_OUTDIR="$(dirname "$TDIR")"
 
     banner "[$TARGET] Starting enumeration. Output: $TDIR"
     banner "[$TARGET] Press ENTER during a feroxbuster tier to pause/cancel it."
@@ -708,6 +750,7 @@ run_target() {
     # the same host share one scan via the flock inside ensure_host_nmap.
     local NMAP_DIR; NMAP_DIR="$(dirname "$TDIR")/_nmap"; mkdir -p "$NMAP_DIR"
     local FULLSCAN_OUT; FULLSCAN_OUT="$(host_nmap_path "$HOST" "$NMAP_DIR")"
+    CURRENT_NMAP_TXT="$FULLSCAN_OUT"
     banner "[$TARGET] Full-port nmap for $HOST (shared, scan-once) -> $FULLSCAN_OUT"
     ensure_host_nmap "$HOST" "$NMAP_DIR" &
     local FULLSCAN_PID=$!; BG_PIDS+=("$FULLSCAN_PID")
@@ -734,10 +777,9 @@ run_target() {
         done
     fi
 
-    # Aggregate every dir's results into one de-duplicated file, then summarize.
-    cat "$TDIR/results.txt" "$TDIR"/port_*/results.txt 2>/dev/null | sort -u > "$TDIR/all_unique_results.txt"
+    # Aggregate + summarize (the same routine the interrupt handler uses).
+    finalize_target "$TARGET" "$TDIR" "$FULLSCAN_OUT"
     done_msg "[$TARGET] Combined results: $TDIR/all_unique_results.txt"
-    write_summary "$TARGET" "$TDIR" "$FULLSCAN_OUT"
     done_msg "[$TARGET] ALL DONE. Everything is in $TDIR"
 }
 
